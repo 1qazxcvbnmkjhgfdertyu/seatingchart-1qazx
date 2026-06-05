@@ -1,4 +1,4 @@
-#include "Renderer.h"
+﻿#include "Renderer.h"
 #include "Utils.h"
 #include "FileIO.h"
 #include <algorithm>
@@ -682,7 +682,7 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
         if (state.layoutItems.empty()) {
             const wchar_t* hint =
                 (state.chartMode == ChartMode::Layout)
-                ? L"Use “Add furniture” in the sidebar to build your room layout\n"
+                ? L"Use \"Add furniture\" in the sidebar to build your room layout\n"
                   L"Then switch to Assign to place students"
                 : L"Switch to  Arrange  mode (top of sidebar)\n"
                   L"to add desks, tables, and chairs";
@@ -946,6 +946,182 @@ void Renderer::PaintWindowBuffered(HWND hwnd, HDC hdc, const AppState& state,
 }
 
 // ---------------------------------------------------------------------------
+// PaintGroupsCanvasBuffered / PaintGroupsCanvas
+// ---------------------------------------------------------------------------
+
+void Renderer::PaintGroupsCanvasBuffered(HWND hwnd, HDC hdc,
+    const RECT& chartBounds,
+    const std::vector<std::vector<std::wstring>>& groups,
+    bool showLastNames) const
+{
+    RECT client{}; GetClientRect(hwnd, &client);
+    const int w = client.right, h = client.bottom;
+    if (w <= 0 || h <= 0) return;
+
+    if (!backBuffer_.dc || !backBuffer_.bitmap ||
+        backBuffer_.width != w || backBuffer_.height != h) {
+        DestroyBackBuffer();
+        backBuffer_.dc     = CreateCompatibleDC(hdc);
+        backBuffer_.bitmap = CreateCompatibleBitmap(hdc, w, h);
+        if (!backBuffer_.dc || !backBuffer_.bitmap) { DestroyBackBuffer(); return; }
+        backBuffer_.oldBitmap = SelectObject(backBuffer_.dc, backBuffer_.bitmap);
+        backBuffer_.width  = w;
+        backBuffer_.height = h;
+    }
+    HDC memDC = backBuffer_.dc;
+
+    // Fill the full window background (same as PaintWindowBuffered does)
+    HBRUSH back = res_.windowBrush ? res_.windowBrush : CreateSolidBrush(theme_.window);
+    FillRect(memDC, &client, back);
+    if (!res_.windowBrush) DeleteObject(back);
+
+    // Fill only the chart area with the light groups background, then draw cards
+    HBRUSH bg = CreateSolidBrush(RGB(242, 242, 242));
+    FillRect(memDC, &chartBounds, bg);
+    DeleteObject(bg);
+
+    PaintGroupsCanvas(memDC, chartBounds, groups, showLastNames);
+    BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
+}
+
+void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
+    const std::vector<std::vector<std::wstring>>& groups,
+    bool showLastNames) const
+{
+    // --- Layout constants ---
+    constexpr int kMargin    = 32;   // canvas edge margin
+    constexpr int kCardGap   = 20;   // gap between cards
+    constexpr int kBadgeH    = 36;   // pill badge height
+    constexpr int kCornerR   = 16;   // card corner radius
+    constexpr int kCardPadH  = 16;   // horizontal name padding inside card
+    constexpr int kCardPadV  = 18;   // vertical padding inside card (below badge overlap)
+    constexpr int kLineH     = 32;   // name row height (accommodates sectionFont)
+    constexpr int kIdealCardW = 200; // target card width — we stay at/below this
+    constexpr int kMinCardW  = 140;  // minimum acceptable card width
+
+    const int W = bounds.right - bounds.left;
+    const int H = bounds.bottom - bounds.top;
+
+    SetBkMode(hdc, TRANSPARENT);
+
+    // Placeholder when no groups have been generated yet
+    if (groups.empty()) {
+        RECT msgRect = bounds;
+        InflateRect(&msgRect, -kMargin, 0);
+        HFONT old = uiFont_ ? static_cast<HFONT>(SelectObject(hdc, uiFont_)) : nullptr;
+        SetTextColor(hdc, RGB(150, 150, 150));
+        DrawTextW(hdc,
+            L"Click \"Shuffle Groups\" in the panel to generate groups.",
+            -1, &msgRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (old) SelectObject(hdc, old);
+        return;
+    }
+
+    const int N      = static_cast<int>(groups.size());
+    const int availW = W - kMargin * 2;
+
+    // ── Column count: prefer kIdealCardW, never go below kMinCardW ──────────
+    // Start with the max columns that fit at ideal width, then cap to N.
+    int cols = std::max(1, std::min(N,
+                   (availW + kCardGap) / (kIdealCardW + kCardGap)));
+    int cardW = (availW - kCardGap * (cols - 1)) / cols;
+    // If that made cards too wide, try adding a column
+    while (cols < N && cardW > kIdealCardW + 20) {
+        ++cols;
+        cardW = (availW - kCardGap * (cols - 1)) / cols;
+    }
+    cardW = std::max(kMinCardW, cardW);
+
+    // Center the card grid horizontally so it doesn't hug the left edge
+    const int gridW  = cols * cardW + (cols - 1) * kCardGap;
+    const int startX = bounds.left + (W - gridW) / 2;
+
+    // ── Card height: badge-overhang + padding + names + padding ─────────────
+    int maxStudents = 0;
+    for (const auto& g : groups)
+        maxStudents = std::max(maxStudents, static_cast<int>(g.size()));
+
+    const int cardBodyH = kBadgeH / 2 + kCardPadV + maxStudents * kLineH + kCardPadV;
+    const int rowStride = kBadgeH / 2 + cardBodyH + kCardGap;
+
+    // Use sectionFont for names — larger and more legible at small card widths
+    HFONT nameFont = sectionFont_ ? sectionFont_ : uiFont_;
+    HFONT badgeFont = sectionFont_ ? sectionFont_ : uiFont_;
+    HFONT prevFont  = nameFont ? static_cast<HFONT>(SelectObject(hdc, nameFont)) : nullptr;
+
+    for (int i = 0; i < N; ++i) {
+        const int col = i % cols;
+        const int row = i / cols;
+
+        const int cardLeft  = startX + col * (cardW + kCardGap);
+        const int cardRight = cardLeft + cardW;
+        const int badgeTop  = bounds.top + kMargin + row * rowStride;
+        const int cardTop   = badgeTop + kBadgeH / 2;
+        const int cardBot   = cardTop  + cardBodyH;
+
+        // ── White rounded card body ──────────────────────────────────────
+        {
+            HBRUSH b = CreateSolidBrush(RGB(255, 255, 255));
+            HPEN   p = CreatePen(PS_SOLID, 1, RGB(210, 210, 210));
+            auto ob  = SelectObject(hdc, b);
+            auto op  = SelectObject(hdc, p);
+            RoundRect(hdc, cardLeft, cardTop, cardRight, cardBot, kCornerR, kCornerR);
+            SelectObject(hdc, ob); SelectObject(hdc, op);
+            DeleteObject(b); DeleteObject(p);
+        }
+
+        // ── Dark pill badge ──────────────────────────────────────────────
+        const std::wstring badgeTxt = L"Group " + std::to_wstring(i + 1);
+        SIZE tsz{};
+        if (badgeFont) SelectObject(hdc, badgeFont);
+        GetTextExtentPoint32W(hdc, badgeTxt.c_str(),
+                              static_cast<int>(badgeTxt.size()), &tsz);
+
+        const int badgeW   = std::min(cardW - 8, static_cast<int>(tsz.cx) + 36);
+        const int badgeCX  = cardLeft + cardW / 2;
+        const int badgeL   = badgeCX - badgeW / 2;
+        const int badgeR   = badgeCX + badgeW / 2;
+        const int badgeBot = badgeTop + kBadgeH;
+
+        {
+            HBRUSH b = CreateSolidBrush(RGB(20, 20, 20));
+            HPEN   p = static_cast<HPEN>(GetStockObject(NULL_PEN));
+            auto ob  = SelectObject(hdc, b);
+            auto op  = SelectObject(hdc, p);
+            RoundRect(hdc, badgeL, badgeTop, badgeR, badgeBot, kBadgeH, kBadgeH);
+            SelectObject(hdc, ob); SelectObject(hdc, op);
+            DeleteObject(b);
+        }
+        {
+            RECT br = {badgeL, badgeTop, badgeR, badgeBot};
+            SetTextColor(hdc, RGB(255, 255, 255));
+            DrawTextW(hdc, badgeTxt.c_str(), -1, &br,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+
+        // ── Student names ────────────────────────────────────────────────
+        if (nameFont) SelectObject(hdc, nameFont);
+        SetTextColor(hdc, RGB(25, 25, 25));
+        const auto& grp = groups[static_cast<size_t>(i)];
+        for (int j = 0; j < static_cast<int>(grp.size()); ++j) {
+            const std::wstring& nm = grp[static_cast<size_t>(j)];
+            std::wstring disp = nm;
+            if (!showLastNames) {
+                const auto sp = nm.find(L' ');
+                if (sp != std::wstring::npos) disp = nm.substr(0, sp);
+            }
+            const int ny = cardTop + kBadgeH / 2 + kCardPadV + j * kLineH;
+            RECT nr = {cardLeft + kCardPadH, ny, cardRight - kCardPadH, ny + kLineH};
+            DrawTextW(hdc, disp.c_str(), -1, &nr,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+    }
+
+    if (prevFont) SelectObject(hdc, prevFont);
+    (void)H;
+}
+
+// ---------------------------------------------------------------------------
 // PaintInfoPanel
 // ---------------------------------------------------------------------------
 
@@ -1086,3 +1262,4 @@ bool Renderer::ExportChartToFile(HWND hwnd,
     DeleteObject(dib); DeleteDC(memDC);
     return WriteAllBytesAtomic(std::wstring(fileName), bytes);
 }
+

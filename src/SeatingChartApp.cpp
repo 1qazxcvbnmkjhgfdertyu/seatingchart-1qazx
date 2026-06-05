@@ -3048,7 +3048,7 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
         }
         break;
     case kShuffleGroupsId:
-        if (active) ShuffleGroups();
+        if (active) { ShuffleGroups(); InvalidateChart(); }
         break;
     case kGroupSizeComboId:
         if (notif == CBN_SELCHANGE && controls_.groupSizeCombo) {
@@ -3487,16 +3487,22 @@ LRESULT SeatingChartApp::OnSetCursor(LPARAM lParam) {
 LRESULT SeatingChartApp::OnPaint() {
     PAINTSTRUCT ps{};
     HDC hdc = BeginPaint(hwnd_, &ps);
-    RECT rb{};
-    if (rubberBandSelecting_) {
-        rb = {
-            std::min(rubberBandStart_.x, rubberBandEnd_.x),
-            std::min(rubberBandStart_.y, rubberBandEnd_.y),
-            std::max(rubberBandStart_.x, rubberBandEnd_.x),
-            std::max(rubberBandStart_.y, rubberBandEnd_.y)
-        };
+    if (sidebar_.ActiveTab() == 3) {
+        renderer_.PaintGroupsCanvasBuffered(hwnd_, hdc, layout_.chart,
+                                            generatedGroups_, state_.showLastNames);
+    } else {
+        RECT rb{};
+        if (rubberBandSelecting_) {
+            rb = {
+                std::min(rubberBandStart_.x, rubberBandEnd_.x),
+                std::min(rubberBandStart_.y, rubberBandEnd_.y),
+                std::max(rubberBandStart_.x, rubberBandEnd_.x),
+                std::max(rubberBandStart_.y, rubberBandEnd_.y)
+            };
+        }
+        renderer_.PaintWindowBuffered(hwnd_, hdc, state_, layout_.chart,
+                                      {hoverItem_}, rb, dragPreview_);
     }
-    renderer_.PaintWindowBuffered(hwnd_, hdc, state_, layout_.chart, {hoverItem_}, rb, dragPreview_);
     EndPaint(hwnd_, &ps);
     return 0;
 }
@@ -3539,12 +3545,16 @@ LRESULT SeatingChartApp::HandleSidebarMessage(HWND sidebar, UINT msg,
     case WM_NOTIFY: {
         auto* hdr = reinterpret_cast<NMHDR*>(lParam);
         if (hdr->idFrom == kTabControlId && hdr->code == TCN_SELCHANGE) {
+            const int prevTab = sidebar_.ActiveTab();
             const int tab = TabCtrl_GetCurSel(controls_.tabControl);
             sidebar_.SetActiveTab(tab);
             // Tab 2 (Arrange) → Layout mode; tabs 0/1 (Roster/Rules) → Assign mode
             const ChartMode newMode = (tab == 2) ? ChartMode::Layout : ChartMode::Seats;
             if (state_.chartMode != newMode) SetChartMode(newMode);
-            else sidebar_.Recalculate(controls_.sidebar, state_, controls_, renderer_);
+            else {
+                sidebar_.Recalculate(controls_.sidebar, state_, controls_, renderer_);
+                if (tab == 3 || prevTab == 3) InvalidateChart();
+            }
         } else if (hdr->idFrom == kRosterViewId &&
                    (hdr->code == NM_CLICK || hdr->code == NM_DBLCLK)) {
             auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lParam);
@@ -3609,37 +3619,6 @@ LRESULT SeatingChartApp::HandleSidebarMessage(HWND sidebar, UINT msg,
                 // Trigger inline add (same as the old "+Add" button)
                 SendMessageW(hwnd_, WM_COMMAND,
                              MAKEWPARAM(kAddStudentId, BN_CLICKED), 0);
-            }
-        } else if (hdr->idFrom == kRosterViewId && hdr->code == NM_CUSTOMDRAW) {
-            auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
-            switch (cd->nmcd.dwDrawStage) {
-            case CDDS_PREPAINT:
-                return CDRF_NOTIFYITEMDRAW;
-            case CDDS_ITEMPREPAINT:
-                return CDRF_NOTIFYSUBITEMDRAW;
-            case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
-                if (cd->iSubItem == 0) {
-                    const int item = static_cast<int>(cd->nmcd.dwItemSpec);
-                    // cd->nmcd.rc for subitem 0 is the full-row rect (Win32 quirk) —
-                    // use GetSubItemRect to get the actual column 0 bounds.
-                    RECT rc{};
-                    ListView_GetSubItemRect(controls_.rosterView, item, 0, LVIR_LABEL, &rc);
-                    wchar_t buf[16]{};
-                    ListView_GetItemText(controls_.rosterView, item, 0, buf, 16);
-                    HFONT hFont = reinterpret_cast<HFONT>(
-                        SendMessageW(controls_.rosterView, WM_GETFONT, 0, 0));
-                    HFONT hOldFont = reinterpret_cast<HFONT>(
-                        SelectObject(cd->nmcd.hdc, hFont));
-                    SetTextColor(cd->nmcd.hdc, cd->clrText);
-                    SetBkMode(cd->nmcd.hdc, TRANSPARENT);
-                    DrawTextW(cd->nmcd.hdc, buf, -1, &rc,
-                              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                    SelectObject(cd->nmcd.hdc, hOldFont);
-                    return CDRF_SKIPDEFAULT;
-                }
-                return CDRF_DODEFAULT;
-            default:
-                return CDRF_DODEFAULT;
             }
         }
         return 0;

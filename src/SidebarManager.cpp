@@ -23,8 +23,10 @@ void SidebarManager::Defer(HDWP& dwp, HWND child, int x, int y, int w, int h) {
     if (viewH_ > buttonH_) { // scrollable region is meaningful
         const int scrollBand = headerH_ + tabH_; // content starts below header + tab strip
         const int scrollBot  = scrollBand + viewH_;
-        if (y < scrollBand || y + h > scrollBot) {
-            // Move above parent top edge — invisible, but never destroyed.
+        // Only hide when completely outside the visible band — partial overlap is fine;
+        // Win32 clips the child to the parent client area and the fixed-header controls
+        // (tab strip, title) paint on top due to higher Z-order.
+        if (y + h <= scrollBand || y >= scrollBot) {
             dwp = DeferWindowPos(dwp, child, nullptr, x, -(h + 4), w, h,
                                  SWP_NOZORDER | SWP_NOACTIVATE);
             return;

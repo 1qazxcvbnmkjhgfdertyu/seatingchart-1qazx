@@ -79,6 +79,14 @@ public:
                              RECT rubberBand = {},
                              const DragPreviewState& dragPreview = {}) const;
 
+    // Renders visual group cards into the main canvas (used when Groups tab is active).
+    // chartBounds matches the same rect passed to PaintWindowBuffered so the cards
+    // stay inside the visible canvas area and don't bleed under the floating sidebar.
+    void PaintGroupsCanvasBuffered(HWND hwnd, HDC hdc,
+                                   const RECT& chartBounds,
+                                   const std::vector<std::vector<std::wstring>>& groups,
+                                   bool showLastNames) const;
+
     // sectionDividers: absolute content-top-relative Y positions set by SidebarManager.
     void PaintInfoPanel(HDC hdc, HWND sidebar, const AppLayout& layout,
                         int scrollOffset,
@@ -109,6 +117,10 @@ private:
     static void DrawTextCentered(HDC hdc, const RECT& rc,
                                   std::wstring_view text, COLORREF color);
     static std::wstring SeatInitials(std::wstring_view name);
+
+    void PaintGroupsCanvas(HDC hdc, const RECT& bounds,
+                           const std::vector<std::vector<std::wstring>>& groups,
+                           bool showLastNames) const;
 
     // Draws a single layout item's shape into screenBounds (no handles/overlays).
     void DrawLayoutItemShape(HDC hdc, const LayoutItem& item,
