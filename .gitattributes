@@ -1,0 +1,44 @@
+# Line ending normalization for cross-platform (repo stores LF, Windows checkout uses CRLF)
+* text=auto
+
+# Source code - enforce LF in repo
+*.cpp text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.cc text eol=lf
+*.cxx text eol=lf
+
+# Build / config
+CMakeLists.txt text eol=lf
+*.cmake text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Docs / data
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.schema.json text eol=lf
+
+# Web / other refs (keep as-is from upstream where possible)
+*.js text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.py text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.coffee text eol=lf
+*.rb text eol=lf
+
+# Binaries / assets - no normalization
+*.png binary
+*.jpg binary
+*.ico binary
+*.gif binary
+*.rtf binary
+*.zip binary
+*.dll binary
+*.exe binary
+*.lib binary
