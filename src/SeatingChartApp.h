@@ -137,6 +137,7 @@ private:
     std::unordered_map<std::wstring, int> groupPairHistory_;
     std::unordered_map<std::wstring, std::unordered_set<int>> groupNumberHistory_;
     std::unordered_map<std::wstring, std::vector<std::unordered_set<std::wstring>>> groupPartnerSetHistory_;
+    std::unordered_set<std::wstring> groupExactHistory_;
     std::wstring groupPermutationCacheKey_;
     std::wstring groupPermutationCacheValue_ = L"0";
 
@@ -219,11 +220,13 @@ private:
     void RefreshGroupRuleToggleLabels();
     [[nodiscard]] bool GroupAvoidSameNumberEnabled() const;
     [[nodiscard]] bool GroupAvoidSamePartnersEnabled() const;
+    [[nodiscard]] bool GroupAvoidSameFullGroupEnabled() const;
     [[nodiscard]] std::vector<int> CurrentGroupPattern() const;
+    [[nodiscard]] std::wstring CanonicalGroupKey(const std::vector<std::wstring>& group) const;
+    [[nodiscard]] std::wstring BuildGroupsSummaryText(const std::wstring& exactText) const;
     [[nodiscard]] std::wstring BuildGroupPermutationCacheKey() const;
     [[nodiscard]] std::wstring ExactGroupPermutationText();
     [[nodiscard]] bool CandidateGroupsMeetConstraints(const std::vector<std::vector<std::wstring>>& groups) const;
-    [[nodiscard]] long double EstimateGroupPermutations() const;
     void RecordGroupShuffleHistory(const std::vector<std::vector<std::wstring>>& groups);
     void ShuffleGroups();
     void SyncGroupsOutput();

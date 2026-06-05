@@ -324,6 +324,7 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
         GetModuleHandleW(nullptr), nullptr);
     c.groupOrLabel    = MakeLabel(p, L"or");
     c.groupOrValLabel = MakeLabel(p, L"—");
+    c.groupSummaryLabel = MakeLabel(p, L"Pick a group size to see the active pattern and exact count.");
     c.groupSizeEdit  = MakeEdit(p, kGroupSizeEditId, ES_NUMBER | ES_CENTER);
     SetWindowTextW(c.groupSizeEdit, L"3");
     c.groupSizeSpin  = CreateWindowExW(0, UPDOWN_CLASS, nullptr,
@@ -362,8 +363,15 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
         0, 0, 0, 0, p,
         reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kGroupAvoidSamePartnersId)),
         GetModuleHandleW(nullptr), nullptr);
+    c.groupAvoidSameFullGroupCheck = CreateWindowExW(
+        0, L"BUTTON", L"Avoid exact same full group",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kGroupAvoidSameFullGroupId)),
+        GetModuleHandleW(nullptr), nullptr);
     SendMessageW(c.groupAvoidSameNumberCheck, BM_SETCHECK, BST_CHECKED, 0);
     SendMessageW(c.groupAvoidSamePartnersCheck, BM_SETCHECK, BST_CHECKED, 0);
+    SendMessageW(c.groupAvoidSameFullGroupCheck, BM_SETCHECK, BST_CHECKED, 0);
 
     // Tab control — Roster | Rules | Arrange | Groups
     c.tabControl = CreateWindowExW(0, WC_TABCONTROL, nullptr,
@@ -472,6 +480,12 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
         L"Use: Group: Alice Bob Charlie");
     AddTip(tip, c.groupResetBtn,
         L"Clear remembered shuffle history so the next group shuffle can reuse the same pairings");
+    AddTip(tip, c.groupAvoidSameNumberCheck,
+        L"When checked, a student cannot return to the same numbered group they have already used");
+    AddTip(tip, c.groupAvoidSamePartnersCheck,
+        L"When checked, a student may repeat with at most one classmate from any prior group");
+    AddTip(tip, c.groupAvoidSameFullGroupCheck,
+        L"When checked, the app will not reuse an identical full group composition from shuffle history");
 
     // Layout tools
     AddTip(tip, c.addSmartboard,   L"Add a smartboard / whiteboard to the layout");
@@ -580,12 +594,14 @@ void ApplyFontsToControls(const ControlHandles& c, const Renderer& r) {
     set(c.groupSizeLabel, r.UiFont()); set(c.groupSizeEdit, r.UiFont());
     set(c.groupSizeCombo, r.UiFont());
     set(c.groupOrLabel, r.UiFont()); set(c.groupOrValLabel, r.UiFont());
+    set(c.groupSummaryLabel, r.UiFont());
     set(c.groupConfigList, r.UiFont()); set(c.groupsOutputList, r.UiFont());
     set(c.shuffleGroupsBtn, r.UiFont());
     set(c.groupRulesLabel, r.UiFont()); set(c.groupRulesEdit, r.UiFont());
     set(c.groupRulesApply, r.UiFont()); set(c.groupResetBtn, r.UiFont());
     set(c.groupKeepApartToggle, r.UiFont()); set(c.groupKeepTogetherToggle, r.UiFont());
     set(c.groupAvoidSameNumberCheck, r.UiFont()); set(c.groupAvoidSamePartnersCheck, r.UiFont());
+    set(c.groupAvoidSameFullGroupCheck, r.UiFont());
     set(c.titleLabel, r.TitleFont());
     for (HWND h : {c.modeLabel, c.rosterLabel, c.rosterListLabel, c.restrictionLabel,
                    c.layoutToolsLabel, c.statusLabel, c.footerMetaLabel,
@@ -827,6 +843,7 @@ void UpdateButtonState(const AppState& s, const ControlHandles& c, bool aaRunnin
     EnableWindow(c.groupKeepTogetherToggle, TRUE);
     EnableWindow(c.groupAvoidSameNumberCheck, TRUE);
     EnableWindow(c.groupAvoidSamePartnersCheck, TRUE);
+    EnableWindow(c.groupAvoidSameFullGroupCheck, TRUE);
     EnableWindow(c.groupResetBtn,   TRUE);
     EnableWindow(c.rosterList,  seats);
     EnableWindow(c.restrictionEdit, seats);

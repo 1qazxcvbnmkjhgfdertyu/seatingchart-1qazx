@@ -430,6 +430,8 @@ void SeatingChartApp::SetStatus(const std::wstring& text) {
 void SeatingChartApp::RefreshAutoAssignFooter() {
     const bool onGroupsTab = sidebar_.ActiveTab() == 3;
     const auto estimatedTotal = EstimateRuleAwarePermutations(state_);
+    std::wstring exactText;
+    if (onGroupsTab) exactText = ExactGroupPermutationText();
     if (controls_.footerProgress) {
         if (onGroupsTab) {
             SendMessageW(controls_.footerProgress, PBM_SETPOS, 0, 0);
@@ -446,7 +448,7 @@ void SeatingChartApp::RefreshAutoAssignFooter() {
     if (controls_.footerMetaLabel) {
         if (onGroupsTab) {
             SetWindowTextW(controls_.footerMetaLabel,
-                (L"Exact groupings left: " + ExactGroupPermutationText()).c_str());
+                (L"Exact groupings left: " + exactText).c_str());
         } else if (aaRunning_) {
             const long double remaining =
                 std::max(0.0L, estimatedTotal - static_cast<long double>(aaProgressSteps_));
@@ -456,6 +458,19 @@ void SeatingChartApp::RefreshAutoAssignFooter() {
             SetWindowTextW(controls_.footerMetaLabel,
                 (L"Permutations left: " + FormatPermutationEstimate(estimatedTotal)).c_str());
         }
+    }
+    if (controls_.groupSummaryLabel) {
+        SetWindowTextW(controls_.groupSummaryLabel,
+            BuildGroupsSummaryText(onGroupsTab ? exactText : ExactGroupPermutationText()).c_str());
+    }
+    if (controls_.shuffleGroupsBtn && onGroupsTab) {
+        const bool canShuffle = !CurrentGroupPattern().empty() &&
+            exactText != L"0";
+        SetWindowTextW(controls_.shuffleGroupsBtn, canShuffle ? L"Shuffle Groups"
+                                                              : L"No Valid Groups");
+        EnableWindow(controls_.shuffleGroupsBtn, canShuffle);
+    } else if (controls_.shuffleGroupsBtn) {
+        SetWindowTextW(controls_.shuffleGroupsBtn, L"Shuffle Groups");
     }
 }
 
@@ -906,7 +921,11 @@ void SeatingChartApp::ApplyRoster(std::vector<std::wstring> roster) {
     if (!rp.empty()) {
         std::wstring text;
         for (const auto& n : state_.roster) { text += n; text += L"\r\n"; }
-        WriteTextFileUtf8Atomic(rp, text);
+        if (!WriteTextFileUtf8Atomic(rp, text)) {
+            SetStatus(L"Roster imported, but saving the roster file failed");
+            ScheduleAutoSave(&state_, hwnd_);
+            return;
+        }
     }
     SetStatus(L"Roster imported");
     ScheduleAutoSave(&state_, hwnd_);
@@ -960,7 +979,14 @@ void SeatingChartApp::ApplyRestrictions(std::vector<Restriction> restrictions,
             text += a.first + L" + " + a.second + L"\r\n";
         for (const auto& t : state_.mustTogether)
             text += t.first + L" == " + t.second + L"\r\n";
-        WriteTextFileUtf8Atomic(rp, text);
+        if (!WriteTextFileUtf8Atomic(rp, text)) {
+            SetStatus(L"Rules updated, but saving the rules file failed");
+            ScheduleAutoSave(&state_, hwnd_);
+            if (!groups.empty()) {
+                ApplyGroupRules(std::move(groups));
+            }
+            return;
+        }
     }
     SetStatus(std::to_wstring(state_.restrictions.size()) + L" keep-apart, "
               + std::to_wstring(state_.affinities.size()) + L" sit-near, "
@@ -2378,10 +2404,21 @@ void SeatingChartApp::ShuffleGroups() {
 
     const std::vector<int> pattern = BuildGroupPattern(N, base);
     if (pattern.empty()) { generatedGroups_.clear(); SyncGroupsOutput(); return; }
+    const std::wstring exactBefore = ExactGroupPermutationText();
+    if (exactBefore == L"0") {
+        MessageBoxW(hwnd_,
+            L"No valid grouping remains under the current Groups history rules.\n\n"
+            L"Try Reset Shuffle Memory, change the group size, or relax one of the history checkboxes.",
+            L"Unable to Shuffle Groups",
+            MB_OK | MB_ICONWARNING);
+        SetStatus(L"Groups shuffle is blocked by the current history rules");
+        RefreshAutoAssignFooter();
+        return;
+    }
 
     // Check whether every possible student pair has already been grouped together.
     // When all C(N,2) pairs are in history, every future shuffle will repeat a pairing.
-    if (false && !groupPairHistory_.empty()) {
+    if (false) {
         bool exhausted = true;
         for (int i = 0; i < N && exhausted; ++i) {
             for (int j = i + 1; j < N && exhausted; ++j) {
@@ -2447,6 +2484,8 @@ void SeatingChartApp::ShuffleGroups() {
     RecordGroupShuffleHistory(generatedGroups_);
     SyncGroupsOutput();
     RefreshAutoAssignFooter();
+    SetStatus(L"Generated " + std::to_wstring(generatedGroups_.size()) +
+              L" groups • remaining exact groupings: " + ExactGroupPermutationText());
 }
 
 void SeatingChartApp::SyncGroupsOutput() {
@@ -2473,6 +2512,7 @@ void SeatingChartApp::ResetGroupShuffleMemory() {
     groupPairHistory_.clear();
     groupNumberHistory_.clear();
     groupPartnerSetHistory_.clear();
+    groupExactHistory_.clear();
     RefreshAutoAssignFooter();
     SetStatus(L"Group shuffle memory reset — all students can pair again");
 }
@@ -2560,6 +2600,11 @@ bool SeatingChartApp::GroupAvoidSamePartnersEnabled() const {
            SendMessageW(controls_.groupAvoidSamePartnersCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
 }
 
+bool SeatingChartApp::GroupAvoidSameFullGroupEnabled() const {
+    return controls_.groupAvoidSameFullGroupCheck &&
+           SendMessageW(controls_.groupAvoidSameFullGroupCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
 std::vector<int> SeatingChartApp::CurrentGroupPattern() const {
     const int N = static_cast<int>(state_.roster.size());
     if (N == 0) return {};
@@ -2576,6 +2621,58 @@ std::vector<int> SeatingChartApp::CurrentGroupPattern() const {
     return BuildGroupPattern(N, base);
 }
 
+std::wstring SeatingChartApp::CanonicalGroupKey(const std::vector<std::wstring>& group) const {
+    std::vector<std::wstring> names;
+    names.reserve(group.size());
+    for (const auto& name : group) names.push_back(CanonicalName(name));
+    std::sort(names.begin(), names.end());
+    std::wstring key;
+    for (const auto& name : names) {
+        if (!key.empty()) key += L"|";
+        key += name;
+    }
+    return key;
+}
+
+std::wstring SeatingChartApp::BuildGroupsSummaryText(const std::wstring& exactText) const {
+    const int studentCount = static_cast<int>(state_.roster.size());
+    const auto pattern = CurrentGroupPattern();
+    if (studentCount == 0) return L"Add students to the roster to generate groups.";
+    if (pattern.empty()) return L"Need at least 4 students to form 2 or more groups.";
+
+    size_t numberedLocks = 0;
+    for (const auto& [name, groups] : groupNumberHistory_) {
+        (void)name;
+        numberedLocks += groups.size();
+    }
+    size_t partnerSets = 0;
+    for (const auto& [name, histories] : groupPartnerSetHistory_) {
+        (void)name;
+        partnerSets += histories.size();
+    }
+    const size_t exactGroups = groupExactHistory_.size();
+
+    std::wstring line1 = L"Pattern: " + FormatGroupPattern(pattern);
+    std::wstring line2 = L"History: ";
+    line2 += GroupAvoidSameNumberEnabled() ? L"No same group number" : L"Group number repeats allowed";
+    line2 += L" • ";
+    line2 += GroupAvoidSamePartnersEnabled() ? L"No 2+ repeated classmates" : L"Repeated classmates allowed";
+    line2 += L" • ";
+    line2 += GroupAvoidSameFullGroupEnabled() ? L"No exact full-group repeats" : L"Full-group repeats allowed";
+    line2 += L" • Locks: " + std::to_wstring(numberedLocks);
+    line2 += L" • Partner sets: " + std::to_wstring(partnerSets);
+    line2 += L" • Prior groups: " + std::to_wstring(exactGroups);
+    if (!state_.groupAffinities.empty())
+        line2 += L"\r\nClusters enforced: " + std::to_wstring(state_.groupAffinities.size());
+
+    if (exactText == L"0")
+        line2 += L"\r\nCurrent rules leave no valid future grouping.";
+    else if (exactText == L"Too many to count exactly")
+        line2 += L"\r\nExact counting is unavailable for this roster size and rule mix.";
+
+    return line1 + L"\r\n" + line2;
+}
+
 std::wstring SeatingChartApp::BuildGroupPermutationCacheKey() const {
     std::wstring key;
     key.reserve(4096);
@@ -2589,6 +2686,7 @@ std::wstring SeatingChartApp::BuildGroupPermutationCacheKey() const {
     key += L"|O:";
     key += GroupAvoidSameNumberEnabled() ? L"1" : L"0";
     key += GroupAvoidSamePartnersEnabled() ? L"1" : L"0";
+    key += GroupAvoidSameFullGroupEnabled() ? L"1" : L"0";
     key += L"|R:";
     for (const auto& name : state_.roster) {
         key += CanonicalName(name);
@@ -2664,6 +2762,12 @@ std::wstring SeatingChartApp::BuildGroupPermutationCacheKey() const {
         std::sort(rows.begin(), rows.end());
         for (const auto& row : rows) key += row + L";";
     }
+    key += L"|GX:";
+    {
+        std::vector<std::wstring> rows(groupExactHistory_.begin(), groupExactHistory_.end());
+        std::sort(rows.begin(), rows.end());
+        for (const auto& row : rows) key += row + L";";
+    }
     return key;
 }
 
@@ -2701,6 +2805,9 @@ std::wstring SeatingChartApp::ExactGroupPermutationText() {
         indexByName[CanonicalName(state_.roster[static_cast<size_t>(i)])] = i;
 
     Dsu dsu(studentCount);
+    const bool avoidSameNumber = GroupAvoidSameNumberEnabled();
+    const bool avoidSamePartners = GroupAvoidSamePartnersEnabled();
+    const bool avoidSameFullGroup = GroupAvoidSameFullGroupEnabled();
     auto unionRule = [&](const Restriction& rule) {
         const auto ia = indexByName.find(CanonicalName(rule.first));
         const auto ib = indexByName.find(CanonicalName(rule.second));
@@ -2709,6 +2816,15 @@ std::wstring SeatingChartApp::ExactGroupPermutationText() {
     };
     for (const auto& rule : state_.affinities) unionRule(rule);
     for (const auto& rule : state_.mustTogether) unionRule(rule);
+    for (const auto& group : state_.groupAffinities) {
+        int anchor = -1;
+        for (const auto& name : group) {
+            const auto it = indexByName.find(CanonicalName(name));
+            if (it == indexByName.end()) continue;
+            if (anchor < 0) anchor = it->second;
+            else dsu.Union(anchor, it->second);
+        }
+    }
 
     std::unordered_map<int, std::vector<int>> groupsByRoot;
     for (int i = 0; i < studentCount; ++i)
@@ -2725,8 +2841,14 @@ std::wstring SeatingChartApp::ExactGroupPermutationText() {
         (void)root;
         Component comp;
         comp.size = static_cast<int>(members.size());
+        if (comp.size > *std::max_element(pattern.begin(), pattern.end())) {
+            groupPermutationCacheKey_ = key;
+            groupPermutationCacheValue_ = L"0";
+            return groupPermutationCacheValue_;
+        }
         for (const int idx : members) {
-            comp.studentMask |= (uint64_t{1} << idx);
+            if (avoidSamePartners || avoidSameFullGroup)
+                comp.studentMask |= (uint64_t{1} << idx);
             componentOfStudent[static_cast<size_t>(idx)] = static_cast<int>(components.size());
         }
         components.push_back(comp);
@@ -2749,18 +2871,18 @@ std::wstring SeatingChartApp::ExactGroupPermutationText() {
         conflictMask[static_cast<size_t>(cb)] |= (uint64_t{1} << ca);
     }
 
-    const bool avoidSameNumber = GroupAvoidSameNumberEnabled();
-    const bool avoidSamePartners = GroupAvoidSamePartnersEnabled();
-    if (!avoidSameNumber && !avoidSamePartners &&
-        state_.restrictions.empty() && state_.affinities.empty() && state_.mustTogether.empty()) {
+    if (!avoidSameNumber && !avoidSamePartners && !avoidSameFullGroup &&
+        state_.restrictions.empty() && state_.affinities.empty() &&
+        state_.mustTogether.empty() && state_.groupAffinities.empty()) {
         groupPermutationCacheKey_ = key;
         groupPermutationCacheValue_ = FormatExactInteger(
             OrderedGroupArrangementCountExact(studentCount, pattern));
         return groupPermutationCacheValue_;
     }
-    if (studentCount > 60) {
+    if (componentCount >= 64 ||
+        ((avoidSamePartners || avoidSameFullGroup) && studentCount >= 64)) {
         groupPermutationCacheKey_ = key;
-        groupPermutationCacheValue_ = L"0";
+        groupPermutationCacheValue_ = L"Too many to count exactly";
         return groupPermutationCacheValue_;
     }
 
@@ -2846,8 +2968,19 @@ std::wstring SeatingChartApp::ExactGroupPermutationText() {
         std::function<void(size_t, int, uint64_t, uint64_t)> chooseSubset;
         chooseSubset = [&](size_t pos, int need, uint64_t chosenComps, uint64_t chosenStudents) {
             if (need == 0) {
-                if (!violatesPartnerHistory(chosenStudents))
+                if (!violatesPartnerHistory(chosenStudents)) {
+                    if (avoidSameFullGroup) {
+                        std::vector<std::wstring> groupNames;
+                        groupNames.reserve(static_cast<size_t>(targetSize));
+                        for (int i = 0; i < studentCount; ++i) {
+                            if ((chosenStudents & (uint64_t{1} << i)) != 0)
+                                groupNames.push_back(state_.roster[static_cast<size_t>(i)]);
+                        }
+                        if (groupExactHistory_.count(CanonicalGroupKey(groupNames)) != 0)
+                            return;
+                    }
                     total += countGroups(groupIndex + 1, remainingMask & ~chosenComps);
+                }
                 return;
             }
             if (pos >= remainingComponents.size()) return;
@@ -2919,15 +3052,29 @@ bool SeatingChartApp::CandidateGroupsMeetConstraints(
         if (ia != groupIndexByStudent.end() && ib != groupIndexByStudent.end() && ia->second != ib->second)
             return false;
     }
+    for (const auto& group : state_.groupAffinities) {
+        int groupIndex = -1;
+        for (const auto& name : group) {
+            const auto it = groupIndexByStudent.find(CanonicalName(name));
+            if (it == groupIndexByStudent.end()) continue;
+            if (groupIndex < 0) groupIndex = it->second;
+            else if (groupIndex != it->second) return false;
+        }
+    }
 
     const bool avoidSameNumber = GroupAvoidSameNumberEnabled();
     const bool avoidSamePartners = GroupAvoidSamePartnersEnabled();
-    if (!avoidSameNumber && !avoidSamePartners) return true;
+    const bool avoidSameFullGroup = GroupAvoidSameFullGroupEnabled();
+    if (!avoidSameNumber && !avoidSamePartners && !avoidSameFullGroup) return true;
 
     for (size_t gi = 0; gi < groups.size(); ++gi) {
         std::unordered_set<std::wstring> groupMembers;
         for (const auto& name : groups[gi])
             groupMembers.insert(CanonicalName(name));
+
+        if (avoidSameFullGroup &&
+            groupExactHistory_.count(CanonicalGroupKey(groups[gi])) != 0)
+            return false;
 
         for (const auto& name : groups[gi]) {
             const auto canon = CanonicalName(name);
@@ -2960,29 +3107,6 @@ bool SeatingChartApp::CandidateGroupsMeetConstraints(
     return true;
 }
 
-long double SeatingChartApp::EstimateGroupPermutations() const {
-    const int N = static_cast<int>(state_.roster.size());
-    const auto pattern = CurrentGroupPattern();
-    if (N == 0 || pattern.empty()) return 0;
-
-    const long double total = OrderedGroupArrangementCount(N, pattern);
-    if (!(total > 0.0L)) return 0;
-
-    std::vector<std::wstring> shuffled = state_.roster;
-    std::mt19937 rng(static_cast<unsigned>(GetTickCount64()));
-    constexpr int kSamples = 256;
-    int validSamples = 0;
-
-    for (int i = 0; i < kSamples; ++i) {
-        std::shuffle(shuffled.begin(), shuffled.end(), rng);
-        if (CandidateGroupsMeetConstraints(PartitionRosterByPattern(shuffled, pattern)))
-            ++validSamples;
-    }
-
-    if (validSamples == 0) return 0;
-    return total * (static_cast<long double>(validSamples) / static_cast<long double>(kSamples));
-}
-
 void SeatingChartApp::RecordGroupShuffleHistory(const std::vector<std::vector<std::wstring>>& groups) {
     for (size_t gi = 0; gi < groups.size(); ++gi) {
         std::unordered_set<std::wstring> groupMembers;
@@ -3000,6 +3124,7 @@ void SeatingChartApp::RecordGroupShuffleHistory(const std::vector<std::vector<st
             for (size_t j = i + 1; j < groups[gi].size(); ++j)
                 ++groupPairHistory_[GroupPairKey(groups[gi][i], groups[gi][j])];
         }
+        groupExactHistory_.insert(CanonicalGroupKey(groups[gi]));
     }
 }
 
@@ -3650,6 +3775,7 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
         break;
     case kGroupAvoidSameNumberId:
     case kGroupAvoidSamePartnersId:
+    case kGroupAvoidSameFullGroupId:
         if (notif == BN_CLICKED) RefreshAutoAssignFooter();
         break;
     case kShowLastNamesId:        if (notif==BN_CLICKED) ToggleShowLastNames(); break;

@@ -111,6 +111,7 @@ constexpr int kGroupKeepApartToggleId    = 6029;
 constexpr int kGroupKeepTogetherToggleId = 6030;
 constexpr int kGroupAvoidSameNumberId    = 6031;
 constexpr int kGroupAvoidSamePartnersId  = 6032;
+constexpr int kGroupAvoidSameFullGroupId = 6033;
 
 // Inline roster edit bar (Roster tab)
 constexpr int kInlineFirstEditId      = 6035;
@@ -212,6 +213,7 @@ struct ControlHandles {
     HWND groupSizeCombo   = nullptr;   // new "Groups of:" dropdown
     HWND groupOrLabel     = nullptr;   // "or" static text
     HWND groupOrValLabel  = nullptr;   // e.g. "3" (computed overflow size)
+    HWND groupSummaryLabel = nullptr;
     HWND groupConfigList  = nullptr;   // legacy list kept hidden
     HWND shuffleGroupsBtn = nullptr;
     HWND groupsOutputList = nullptr;
@@ -223,6 +225,7 @@ struct ControlHandles {
     HWND groupKeepTogetherToggle = nullptr;
     HWND groupAvoidSameNumberCheck = nullptr;
     HWND groupAvoidSamePartnersCheck = nullptr;
+    HWND groupAvoidSameFullGroupCheck = nullptr;
 
     // Layout mode — room size
     HWND roomSizeLabel = nullptr;

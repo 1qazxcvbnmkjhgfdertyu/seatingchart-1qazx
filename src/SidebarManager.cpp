@@ -213,12 +213,14 @@ int SidebarManager::LayoutGroupsPanel(HDWP& dwp, const ControlHandles& c,
     Defer(dwp, c.groupOrValLabel, px + comboLblW + gap_ + comboW + gap_ + orLblW + gap_, y,
           std::max(4, pw - comboLblW - comboW - orLblW - gap_ * 4), buttonH_);
     y += buttonH_ + gap_ + sectionGap_;
+    Defer(dwp, c.groupSummaryLabel, px, y, pw, lineH_ * 3); y += lineH_ * 3 + gap_;
 
     // Shuffle controls
     rec(y);
     PlaceButtons(dwp, {c.shuffleGroupsBtn, c.groupResetBtn}, px, pw, y, Scale(100));
     Defer(dwp, c.groupAvoidSameNumberCheck, px, y, pw, buttonH_); y += buttonH_ + gap_;
     Defer(dwp, c.groupAvoidSamePartnersCheck, px, y, pw, buttonH_); y += buttonH_ + gap_;
+    Defer(dwp, c.groupAvoidSameFullGroupCheck, px, y, pw, buttonH_); y += buttonH_ + gap_;
     y += sectionGap_;
 
     // Keep Apart section (collapsed by default so students do not see active rules)
@@ -314,9 +316,9 @@ void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode 
         if (h) ShowWindow(h, onArrange ? SW_SHOW : SW_HIDE);
 
     // Groups tab
-    for (HWND h : {c.groupSizeLabel, c.groupSizeCombo, c.groupOrLabel, c.groupOrValLabel,
+    for (HWND h : {c.groupSizeLabel, c.groupSizeCombo, c.groupOrLabel, c.groupOrValLabel, c.groupSummaryLabel,
                    c.shuffleGroupsBtn, c.groupResetBtn,
-                   c.groupAvoidSameNumberCheck, c.groupAvoidSamePartnersCheck,
+                   c.groupAvoidSameNumberCheck, c.groupAvoidSamePartnersCheck, c.groupAvoidSameFullGroupCheck,
                    c.groupKeepApartToggle, c.groupKeepTogetherToggle})
         if (h) ShowWindow(h, onGroups ? SW_SHOW : SW_HIDE);
     if (c.keepApartList) ShowWindow(c.keepApartList,

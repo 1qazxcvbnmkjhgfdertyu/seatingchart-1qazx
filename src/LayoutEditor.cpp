@@ -124,6 +124,8 @@ void LayoutEditor::AddItem(LayoutItemType type) {
     case LayoutItemType::RectangleDesk: rc = { 80, 200, 200, 260}; break;
     case LayoutItemType::Table4:        rc = { 80, 300, 240, 400}; break;
     case LayoutItemType::BigTable:      rc = { 80, 300, 320, 440}; break;
+    case LayoutItemType::LDesk:         rc = { 80, 200, 240, 320}; break;
+    case LayoutItemType::UDesk:         rc = { 80, 180, 300, 340}; break;
     // Pods are single objects, centred in the room.
     case LayoutItemType::TrapPair:      rc = { cx-150, cy-90,  cx+150, cy+90  }; break;
     case LayoutItemType::TrapPod:       rc = { cx-190, cy-115, cx+190, cy+115 }; break;
