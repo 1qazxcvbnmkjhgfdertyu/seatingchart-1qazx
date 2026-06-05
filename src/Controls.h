@@ -107,6 +107,10 @@ constexpr int kGroupRulesApplyId      = 6025;
 constexpr int kGroupResetId           = 6026;
 constexpr int kGroupRulesEditId       = 6027;
 constexpr int kGroupSizeComboId       = 6028; // "Groups of:" dropdown
+constexpr int kGroupKeepApartToggleId    = 6029;
+constexpr int kGroupKeepTogetherToggleId = 6030;
+constexpr int kGroupAvoidSameNumberId    = 6031;
+constexpr int kGroupAvoidSamePartnersId  = 6032;
 
 // Inline roster edit bar (Roster tab)
 constexpr int kInlineFirstEditId      = 6035;
@@ -132,6 +136,7 @@ struct ControlHandles {
 
     // Header / status (always visible, not scrolled)
     HWND titleLabel = nullptr, summaryLabel = nullptr, statusLabel = nullptr;
+    HWND footerMetaLabel = nullptr, footerProgress = nullptr;
 
     // Mode strip
     HWND modeLabel = nullptr, seatMode = nullptr, layoutMode = nullptr;
@@ -214,6 +219,10 @@ struct ControlHandles {
     HWND groupRulesEdit   = nullptr;
     HWND groupRulesApply  = nullptr;
     HWND groupResetBtn    = nullptr;
+    HWND groupKeepApartToggle = nullptr;
+    HWND groupKeepTogetherToggle = nullptr;
+    HWND groupAvoidSameNumberCheck = nullptr;
+    HWND groupAvoidSamePartnersCheck = nullptr;
 
     // Layout mode — room size
     HWND roomSizeLabel = nullptr;

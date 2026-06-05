@@ -41,6 +41,10 @@ public:
     // --- Tab management ---
     void SetActiveTab(int tab) { activeTab_ = tab; scroll_ = 0; }
     int  ActiveTab()    const { return activeTab_; }
+    void SetGroupKeepApartCollapsed(bool collapsed) { groupKeepApartCollapsed_ = collapsed; }
+    void SetGroupKeepTogetherCollapsed(bool collapsed) { groupKeepTogetherCollapsed_ = collapsed; }
+    bool GroupKeepApartCollapsed() const { return groupKeepApartCollapsed_; }
+    bool GroupKeepTogetherCollapsed() const { return groupKeepTogetherCollapsed_; }
 
     // Resize rule/roster ListViews to match panel width (call after Recalculate)
     void ResizeListViewColumns(const ControlHandles& c, int panelWidth) const;
@@ -61,6 +65,8 @@ private:
     int statusH_   = 58;
     int activeTab_ = 2;   // 0=Roster, 1=Rules, 2=Arrange (matches default Layout mode)
     int scrollLine_ = 36;
+    bool groupKeepApartCollapsed_ = true;
+    bool groupKeepTogetherCollapsed_ = true;
     std::vector<int> sectionDividers_;
 
     // Sub-functions called by Recalculate

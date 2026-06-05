@@ -46,7 +46,7 @@ void SidebarManager::RebuildMetrics(HWND sidebar, const Renderer& renderer) {
     sectionGap_ = m.sectionGap;
     headerH_    = std::max(lineH_ * 5 + gap_ * 3, Scale(96));
     tabH_       = std::max(lineH_ + Scale(10), Scale(28)); // tab strip row height
-    statusH_    = std::max(lineH_ * 3 + gap_ * 2, Scale(54));
+    statusH_    = std::max(lineH_ * 5 + gap_ * 4, Scale(86));
     scrollLine_ = buttonH_ + gap_;
 }
 
@@ -197,6 +197,7 @@ int SidebarManager::LayoutGroupsPanel(HDWP& dwp, const ControlHandles& c,
                                        int px, int pw, int base, int scrollUsed) {
     int y = base;
     auto rec = [&](int absY) { sectionDividers_.push_back(absY + scrollUsed); };
+    const int pairListH = std::max(lineH_ * 4, Scale(60));
 
     rec(y);
     // "Groups of: [combo]  or [label]"
@@ -205,28 +206,38 @@ int SidebarManager::LayoutGroupsPanel(HDWP& dwp, const ControlHandles& c,
     const int orLblW    = Scale(24);
     const int orValW    = Scale(40);
     Defer(dwp, c.groupSizeLabel,  px,                              y, comboLblW, buttonH_);
-    Defer(dwp, c.groupSizeCombo,  px + comboLblW + gap_,           y, comboW,    buttonH_);
+    // Combo boxes need extra height for the dropped list; buttonH_ alone leaves
+    // the control looking clickable but unable to open.
+    Defer(dwp, c.groupSizeCombo,  px + comboLblW + gap_,           y, comboW,    buttonH_ + lineH_ * 10);
     Defer(dwp, c.groupOrLabel,    px + comboLblW + gap_ + comboW + gap_, y, orLblW, buttonH_);
     Defer(dwp, c.groupOrValLabel, px + comboLblW + gap_ + comboW + gap_ + orLblW + gap_, y,
           std::max(4, pw - comboLblW - comboW - orLblW - gap_ * 4), buttonH_);
     y += buttonH_ + gap_ + sectionGap_;
 
-    // Shuffle and output
+    // Shuffle controls
     rec(y);
     PlaceButtons(dwp, {c.shuffleGroupsBtn, c.groupResetBtn}, px, pw, y, Scale(100));
+    Defer(dwp, c.groupAvoidSameNumberCheck, px, y, pw, buttonH_); y += buttonH_ + gap_;
+    Defer(dwp, c.groupAvoidSamePartnersCheck, px, y, pw, buttonH_); y += buttonH_ + gap_;
     y += sectionGap_;
 
-    // Output list
-    const int outH = std::max(Scale(80), (viewH_ - (y - base)) / 2);
-    Defer(dwp, c.groupsOutputList, px, y, pw, outH); y += outH + gap_ + sectionGap_;
-
-    // Group rules section
+    // Keep Apart section (collapsed by default so students do not see active rules)
     rec(y);
-    Defer(dwp, c.groupRulesLabel, px, y, pw, labelH_); y += labelH_ + gap_;
-    const int rulesH = std::max(Scale(60), viewH_ - (y - base) - buttonH_ - gap_ * 2);
-    Defer(dwp, c.groupRulesEdit, px, y, pw, rulesH); y += rulesH + gap_;
-    PlaceButtons(dwp, {c.groupRulesApply}, px, pw, y, Scale(100));
-    y += sectionGap_;
+    Defer(dwp, c.groupKeepApartToggle, px, y, pw, buttonH_); y += buttonH_ + gap_;
+    if (!groupKeepApartCollapsed_) {
+        Defer(dwp, c.keepApartList, px, y, pw, pairListH); y += pairListH + gap_;
+        PlaceButtons(dwp, {c.addKeepApartBtn, c.remKeepApartBtn}, px, pw, y, Scale(80));
+        y += sectionGap_;
+    }
+
+    // Keep Together section
+    rec(y);
+    Defer(dwp, c.groupKeepTogetherToggle, px, y, pw, buttonH_); y += buttonH_ + gap_;
+    if (!groupKeepTogetherCollapsed_) {
+        Defer(dwp, c.keepTogetherList, px, y, pw, pairListH); y += pairListH + gap_;
+        PlaceButtons(dwp, {c.addKeepTogetherBtn, c.remKeepTogetherBtn}, px, pw, y, Scale(80));
+        y += sectionGap_;
+    }
 
     return y;
 }
@@ -304,9 +315,22 @@ void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode 
 
     // Groups tab
     for (HWND h : {c.groupSizeLabel, c.groupSizeCombo, c.groupOrLabel, c.groupOrValLabel,
-                   c.shuffleGroupsBtn, c.groupResetBtn, c.groupsOutputList,
-                   c.groupRulesLabel, c.groupRulesEdit, c.groupRulesApply})
+                   c.shuffleGroupsBtn, c.groupResetBtn,
+                   c.groupAvoidSameNumberCheck, c.groupAvoidSamePartnersCheck,
+                   c.groupKeepApartToggle, c.groupKeepTogetherToggle})
         if (h) ShowWindow(h, onGroups ? SW_SHOW : SW_HIDE);
+    if (c.keepApartList) ShowWindow(c.keepApartList,
+        (onRules || (onGroups && !groupKeepApartCollapsed_)) ? SW_SHOW : SW_HIDE);
+    if (c.addKeepApartBtn) ShowWindow(c.addKeepApartBtn,
+        (onRules || (onGroups && !groupKeepApartCollapsed_)) ? SW_SHOW : SW_HIDE);
+    if (c.remKeepApartBtn) ShowWindow(c.remKeepApartBtn,
+        (onRules || (onGroups && !groupKeepApartCollapsed_)) ? SW_SHOW : SW_HIDE);
+    if (c.keepTogetherList) ShowWindow(c.keepTogetherList,
+        (onRules || (onGroups && !groupKeepTogetherCollapsed_)) ? SW_SHOW : SW_HIDE);
+    if (c.addKeepTogetherBtn) ShowWindow(c.addKeepTogetherBtn,
+        (onRules || (onGroups && !groupKeepTogetherCollapsed_)) ? SW_SHOW : SW_HIDE);
+    if (c.remKeepTogetherBtn) ShowWindow(c.remKeepTogetherBtn,
+        (onRules || (onGroups && !groupKeepTogetherCollapsed_)) ? SW_SHOW : SW_HIDE);
 
     // Always hidden — old text-box controls replaced by structured UI
     for (HWND h : {c.rosterEdit, c.rosterFilter, c.restrictionEdit, c.applyRules,
@@ -319,7 +343,9 @@ void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode 
                    c.captureChart, c.exportChart, c.printChart, c.exportCsv,
                    c.seatingReport, c.exportHtml, c.saveTemplateBtn, c.loadTemplateBtn,
                    // Old groups size spinner replaced by combobox
-                   c.groupSizeEdit, c.groupSizeSpin, c.groupConfigList})
+                   c.groupSizeEdit, c.groupSizeSpin, c.groupConfigList,
+                   // Retired text/list based groups rule UI
+                   c.groupsOutputList, c.groupRulesLabel, c.groupRulesEdit, c.groupRulesApply})
         if (h) ShowWindow(h, SW_HIDE);
 
     // Always hidden — retired sidebar controls
@@ -384,12 +410,13 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
 
     HDWP dwp = BeginDeferWindowPos(100);
 
-    // Fixed: title, summary, status — bypass scrollable-region clamp
+    // Fixed: title, summary, footer — bypass scrollable-region clamp
     DeferFixed(dwp, c.titleLabel,   padding, padding,                     pw, lineH_ * 2);
     DeferFixed(dwp, c.summaryLabel, padding, padding + lineH_ * 2 + gap_, pw, lineH_ * 3);
-    DeferFixed(dwp, c.statusLabel,  padding,
-               std::max(padding, static_cast<int>(rc.bottom) - statusH + gap_),
-               pw, lineH_ * 2 + gap_);
+    const int footerTop = std::max(padding, static_cast<int>(rc.bottom) - statusH + gap_);
+    DeferFixed(dwp, c.statusLabel,  padding, footerTop, pw, lineH_ + gap_);
+    DeferFixed(dwp, c.footerMetaLabel, padding, footerTop + lineH_ + gap_, pw, lineH_ + gap_);
+    DeferFixed(dwp, c.footerProgress, padding, footerTop + (lineH_ + gap_) * 2, pw, std::max(Scale(12), lineH_));
 
     // Fixed: tab control spans the full panel width, flush below the header
     DeferFixed(dwp, c.tabControl, 0, headerH_,
@@ -412,7 +439,7 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
     ResizeListViewColumns(c, static_cast<int>(rc.right - rc.left));
 
     // Fixed elements always on top
-    for (HWND h : {c.titleLabel, c.summaryLabel, c.statusLabel, c.tabControl})
+    for (HWND h : {c.titleLabel, c.summaryLabel, c.statusLabel, c.footerMetaLabel, c.footerProgress, c.tabControl})
         if (h) SetWindowPos(h, HWND_TOP, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 

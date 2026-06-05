@@ -10,8 +10,9 @@
 #include <atomic>
 #include <memory>
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include <windows.h>
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ public:
     // Called from subclass procs (must be public)
     void CommitInlineCellEdit(bool advance = false);
     void CancelInlineCellEdit();
+    void AdvanceToNextStudent();   // Enter key: commit + open next row's first-name cell
     bool IsAddingNewStudent() const { return cellEdit_.isNew; }
 
     static SeatingChartApp* FromHwnd(HWND hwnd) {
@@ -96,6 +98,8 @@ private:
     uint64_t          aaStartRevision_ = 0;
     std::atomic<bool> aaCancel_        { false };
     HANDLE            aaThread_        = nullptr;
+    size_t            aaProgressSteps_ = 0;
+    size_t            aaProgressLimit_ = kDefaultAutoAssignSearchLimit;
 
     // --- Layout viewport transform (room-local → screen) ---
     // Recomputed in RecalculateLayout(); referenced by the sub-controllers.
@@ -128,8 +132,11 @@ private:
 
     // --- Groups (transient, not saved) ---
     std::vector<std::vector<std::wstring>> generatedGroups_;
-    int groupSizePref_ = 2;
+    int   groupSizePref_ = 2;
+    float groupsZoom_    = 3.0f;   // Ctrl+Wheel zoom for the groups canvas (0.5 – 5.0)
     std::unordered_map<std::wstring, int> groupPairHistory_;
+    std::unordered_map<std::wstring, std::unordered_set<int>> groupNumberHistory_;
+    std::unordered_map<std::wstring, std::vector<std::unordered_set<std::wstring>>> groupPartnerSetHistory_;
 
     // --- Inline cell editing (floating overlay EDIT on rosterView) ---
     struct CellEdit {
@@ -171,6 +178,7 @@ private:
     // --- Seat operations ---
     void ClearAllSeats();
     void BuildMenuBar();
+    void RefreshAutoAssignFooter();
     void ShowAlignmentToolsWindow();
     void ShowObjectInspectorWindow();
     void LayoutFloatingTools();
@@ -206,6 +214,13 @@ private:
     // --- Groups ---
     void RefreshGroupConfigList();
     void RefreshGroupCombo();
+    void RefreshGroupRuleToggleLabels();
+    [[nodiscard]] bool GroupAvoidSameNumberEnabled() const;
+    [[nodiscard]] bool GroupAvoidSamePartnersEnabled() const;
+    [[nodiscard]] std::vector<int> CurrentGroupPattern() const;
+    [[nodiscard]] bool CandidateGroupsMeetConstraints(const std::vector<std::vector<std::wstring>>& groups) const;
+    [[nodiscard]] long double EstimateGroupPermutations() const;
+    void RecordGroupShuffleHistory(const std::vector<std::vector<std::wstring>>& groups);
     void ShuffleGroups();
     void SyncGroupsOutput();
     void ResetGroupShuffleMemory();

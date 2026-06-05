@@ -81,6 +81,14 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
     c.titleLabel   = MakeLabel(p, L"Seating Chart");
     c.summaryLabel = MakeLabel(p, L"");
     c.statusLabel  = MakeLabel(p, L"Ready");
+    c.footerMetaLabel = MakeLabel(p, L"Permutations left: —");
+    c.footerProgress = CreateWindowExW(0, PROGRESS_CLASS, nullptr,
+        WS_CHILD | WS_VISIBLE,
+        0,0,0,0, p, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (c.footerProgress) {
+        SendMessageW(c.footerProgress, PBM_SETRANGE32, 0, 100);
+        SendMessageW(c.footerProgress, PBM_SETPOS, 0, 0);
+    }
 
     c.modeLabel    = MakeLabel(p, L"");
     c.layoutMode   = MakeRadio(p, L"Arrange", kLayoutModeId, WS_GROUP);
@@ -310,7 +318,7 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
     c.groupSizeLabel = MakeLabel(p, L"Groups of:");
     // Combobox for selecting base group size (valid options computed from roster)
     c.groupSizeCombo = CreateWindowExW(0, L"COMBOBOX", nullptr,
-        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
         0, 0, 0, 0, p,
         reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kGroupSizeComboId)),
         GetModuleHandleW(nullptr), nullptr);
@@ -340,6 +348,22 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
     c.groupRulesEdit  = MakeEdit(p, kGroupRulesEditId, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
     c.groupRulesApply = MakeButton(p, L"Apply Group Rules", kGroupRulesApplyId);
     c.groupResetBtn   = MakeButton(p, L"Reset Shuffle Memory", kGroupResetId);
+    c.groupKeepApartToggle    = MakeButton(p, L"Show Keep Apart Rules",    kGroupKeepApartToggleId);
+    c.groupKeepTogetherToggle = MakeButton(p, L"Show Keep Together Rules", kGroupKeepTogetherToggleId);
+    c.groupAvoidSameNumberCheck = CreateWindowExW(
+        0, L"BUTTON", L"Avoid same numbered group",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kGroupAvoidSameNumberId)),
+        GetModuleHandleW(nullptr), nullptr);
+    c.groupAvoidSamePartnersCheck = CreateWindowExW(
+        0, L"BUTTON", L"Allow at most 1 repeated classmate",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kGroupAvoidSamePartnersId)),
+        GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(c.groupAvoidSameNumberCheck, BM_SETCHECK, BST_CHECKED, 0);
+    SendMessageW(c.groupAvoidSamePartnersCheck, BM_SETCHECK, BST_CHECKED, 0);
 
     // Tab control — Roster | Rules | Arrange | Groups
     c.tabControl = CreateWindowExW(0, WC_TABCONTROL, nullptr,
@@ -519,7 +543,7 @@ void ApplyFontsToControls(const ControlHandles& c, const Renderer& r) {
         c.addTrapPair, c.addTrapPod, c.deleteLayout, c.mergeSelected,
         c.captureChart, c.exportChart, c.printChart, c.exportCsv, c.seatingReport, c.exportHtml,
         c.summaryLabel, c.modeLabel, c.rosterLabel, c.rosterListLabel,
-        c.restrictionLabel, c.layoutToolsLabel, c.statusLabel,
+        c.restrictionLabel, c.layoutToolsLabel, c.statusLabel, c.footerMetaLabel,
         c.quickFillSeats, c.assignSelectedRoster, c.sendLayoutBack, c.bringLayoutFront,
         c.clearAllSeats, c.layoutInspectorLabel, c.layoutNameLabel, c.layoutLabelEdit,
         c.layoutXLabel, c.layoutYLabel, c.layoutWidthLabel, c.layoutHeightLabel,
@@ -560,9 +584,11 @@ void ApplyFontsToControls(const ControlHandles& c, const Renderer& r) {
     set(c.shuffleGroupsBtn, r.UiFont());
     set(c.groupRulesLabel, r.UiFont()); set(c.groupRulesEdit, r.UiFont());
     set(c.groupRulesApply, r.UiFont()); set(c.groupResetBtn, r.UiFont());
+    set(c.groupKeepApartToggle, r.UiFont()); set(c.groupKeepTogetherToggle, r.UiFont());
+    set(c.groupAvoidSameNumberCheck, r.UiFont()); set(c.groupAvoidSamePartnersCheck, r.UiFont());
     set(c.titleLabel, r.TitleFont());
     for (HWND h : {c.modeLabel, c.rosterLabel, c.rosterListLabel, c.restrictionLabel,
-                   c.layoutToolsLabel, c.statusLabel,
+                   c.layoutToolsLabel, c.statusLabel, c.footerMetaLabel,
                    c.layoutInspectorLabel,
                    c.layoutTransformLabel, c.alignLabel, c.roomSizeLabel})
         set(h, r.SectionFont());
@@ -797,6 +823,10 @@ void UpdateButtonState(const AppState& s, const ControlHandles& c, bool aaRunnin
     EnableWindow(c.groupSizeCombo, TRUE);
     EnableWindow(c.groupRulesEdit, TRUE);
     EnableWindow(c.groupRulesApply, TRUE);
+    EnableWindow(c.groupKeepApartToggle, TRUE);
+    EnableWindow(c.groupKeepTogetherToggle, TRUE);
+    EnableWindow(c.groupAvoidSameNumberCheck, TRUE);
+    EnableWindow(c.groupAvoidSamePartnersCheck, TRUE);
     EnableWindow(c.groupResetBtn,   TRUE);
     EnableWindow(c.rosterList,  seats);
     EnableWindow(c.restrictionEdit, seats);

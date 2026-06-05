@@ -82,10 +82,15 @@ public:
     // Renders visual group cards into the main canvas (used when Groups tab is active).
     // chartBounds matches the same rect passed to PaintWindowBuffered so the cards
     // stay inside the visible canvas area and don't bleed under the floating sidebar.
+    // zoom: Ctrl+Wheel scale factor (0.5 – 3.0, default 1.0).
     void PaintGroupsCanvasBuffered(HWND hwnd, HDC hdc,
                                    const RECT& chartBounds,
                                    const std::vector<std::vector<std::wstring>>& groups,
-                                   bool showLastNames) const;
+                                   bool showLastNames,
+                                   float zoom = 1.0f) const;
+    float ClampGroupsZoomToFit(HWND hwnd, const RECT& chartBounds,
+                               const std::vector<std::vector<std::wstring>>& groups,
+                               bool showLastNames, float desiredZoom) const;
 
     // sectionDividers: absolute content-top-relative Y positions set by SidebarManager.
     void PaintInfoPanel(HDC hdc, HWND sidebar, const AppLayout& layout,
@@ -106,7 +111,11 @@ private:
     ThemeResources res_{};
     HFONT          uiFont_ = nullptr, titleFont_ = nullptr, sectionFont_ = nullptr;
     mutable BackBuffer backBuffer_{};
+    mutable bool       backBufferInUse_ = false;
     mutable std::unordered_map<COLORREF, HBRUSH> colorBrushCache_;
+    mutable std::unordered_map<int, HFONT>        groupFontCache_;  // zoom_key→scaled font
+
+    HFONT GetGroupFont(float zoom) const;
 
     void RebuildResources();
     void DestroyResources();
@@ -120,7 +129,10 @@ private:
 
     void PaintGroupsCanvas(HDC hdc, const RECT& bounds,
                            const std::vector<std::vector<std::wstring>>& groups,
-                           bool showLastNames) const;
+                           bool showLastNames, float zoom = 1.0f) const;
+    bool GroupsCanvasFits(HDC hdc, const RECT& bounds,
+                          const std::vector<std::vector<std::wstring>>& groups,
+                          bool showLastNames, float zoom) const;
 
     // Draws a single layout item's shape into screenBounds (no handles/overlays).
     void DrawLayoutItemShape(HDC hdc, const LayoutItem& item,

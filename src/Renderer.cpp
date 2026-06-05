@@ -145,6 +145,8 @@ static HFONT MakeBalooFont(int pts, UINT dpi, int weight = FW_NORMAL) {
 void Renderer::DestroyFonts() {
     auto df = [](HFONT& f) { if (f) { DeleteObject(f); f = nullptr; } };
     df(uiFont_); df(titleFont_); df(sectionFont_);
+    for (auto& [k, f] : groupFontCache_) if (f) DeleteObject(f);
+    groupFontCache_.clear();
 }
 
 void Renderer::RebuildFonts(UINT dpi) {
@@ -152,6 +154,26 @@ void Renderer::RebuildFonts(UINT dpi) {
     uiFont_      = MakeBalooFont(9,  dpi);
     titleFont_   = MakeBalooFont(15, dpi, FW_SEMIBOLD);
     sectionFont_ = MakeBalooFont(9,  dpi, FW_SEMIBOLD);
+}
+
+// Returns a cached Baloo 2 semibold font scaled by zoom relative to sectionFont_.
+// Key = round(zoom * 20) so steps of 0.05 are distinct; DPI changes clear the cache.
+HFONT Renderer::GetGroupFont(float zoom) const {
+    const int key = static_cast<int>(std::round(zoom * 20.0f));
+    auto it = groupFontCache_.find(key);
+    if (it != groupFontCache_.end()) return it->second;
+
+    HFONT base = sectionFont_ ? sectionFont_ : uiFont_;
+    if (!base) { groupFontCache_[key] = nullptr; return nullptr; }
+
+    LOGFONTW lf{};
+    if (!GetObjectW(base, sizeof(lf), &lf)) { groupFontCache_[key] = nullptr; return nullptr; }
+
+    lf.lfHeight = static_cast<LONG>(lf.lfHeight * zoom);
+    lf.lfWidth  = 0;   // let GDI choose the best width
+    HFONT f = CreateFontIndirectW(&lf);
+    groupFontCache_[key] = f;
+    return f;
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +937,7 @@ void Renderer::PaintWindowBuffered(HWND hwnd, HDC hdc, const AppState& state,
                                     const RECT& chartBounds, HoverState hover,
                                     RECT rubberBand,
                                     const DragPreviewState& dragPreview) const {
+    if (backBufferInUse_) return;
     RECT client{}; GetClientRect(hwnd, &client);
     const int w = client.right - client.left, h = client.bottom - client.top;
     if (w <= 0 || h <= 0) return;
@@ -933,16 +956,15 @@ void Renderer::PaintWindowBuffered(HWND hwnd, HDC hdc, const AppState& state,
         backBuffer_.height = h;
     }
     HDC memDC = backBuffer_.dc;
-    if (!memDC) {
-        return;
-    }
+    if (!memDC) return;
 
+    backBufferInUse_ = true;
     HBRUSH back = res_.windowBrush ? res_.windowBrush : CreateSolidBrush(theme_.window);
     FillRect(memDC, &client, back);
     if (!res_.windowBrush) DeleteObject(back);
-
     PaintChart(memDC, state, chartBounds, hover, rubberBand, dragPreview);
     BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
+    backBufferInUse_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -952,8 +974,9 @@ void Renderer::PaintWindowBuffered(HWND hwnd, HDC hdc, const AppState& state,
 void Renderer::PaintGroupsCanvasBuffered(HWND hwnd, HDC hdc,
     const RECT& chartBounds,
     const std::vector<std::vector<std::wstring>>& groups,
-    bool showLastNames) const
+    bool showLastNames, float zoom) const
 {
+    if (backBufferInUse_) return;
     RECT client{}; GetClientRect(hwnd, &client);
     const int w = client.right, h = client.bottom;
     if (w <= 0 || h <= 0) return;
@@ -980,75 +1003,222 @@ void Renderer::PaintGroupsCanvasBuffered(HWND hwnd, HDC hdc,
     FillRect(memDC, &chartBounds, bg);
     DeleteObject(bg);
 
-    PaintGroupsCanvas(memDC, chartBounds, groups, showLastNames);
+    backBufferInUse_ = true;
+    PaintGroupsCanvas(memDC, chartBounds, groups, showLastNames, zoom);
     BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
+    backBufferInUse_ = false;
+}
+
+float Renderer::ClampGroupsZoomToFit(HWND hwnd, const RECT& chartBounds,
+    const std::vector<std::vector<std::wstring>>& groups,
+    bool showLastNames, float desiredZoom) const
+{
+    const float clampedDesired = std::clamp(desiredZoom, 0.5f, 5.0f);
+    if (groups.empty() || !IsWindow(hwnd))
+        return clampedDesired;
+
+    HDC hdc = GetDC(hwnd);
+    if (!hdc) return clampedDesired;
+
+    float result = clampedDesired;
+    if (!GroupsCanvasFits(hdc, chartBounds, groups, showLastNames, clampedDesired)) {
+        float low = 0.5f;
+        float high = clampedDesired;
+        result = 0.5f;
+        for (int i = 0; i < 14; ++i) {
+            const float mid = (low + high) * 0.5f;
+            if (GroupsCanvasFits(hdc, chartBounds, groups, showLastNames, mid)) {
+                result = mid;
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+    }
+
+    ReleaseDC(hwnd, hdc);
+    return std::clamp(result, 0.5f, 5.0f);
+}
+
+bool Renderer::GroupsCanvasFits(HDC hdc, const RECT& bounds,
+    const std::vector<std::vector<std::wstring>>& groups,
+    bool showLastNames, float zoom) const
+{
+    if (groups.empty()) return true;
+
+    const float z = std::clamp(zoom, 0.5f, 5.0f);
+    auto sc = [z](int v) { return std::max(1, static_cast<int>(v * z)); };
+
+    const int kMargin     = sc(32);
+    const int kCardGap    = sc(20);
+    const int kCardPadH   = sc(14);
+    const int kCardPadV   = sc(12);
+    const int kNameGap    = sc(6);
+    const int kIdealCardW = sc(220);
+    const int kMinCardW   = sc(150);
+
+    const int W = bounds.right - bounds.left;
+    const int H = bounds.bottom - bounds.top;
+    if (W <= 0 || H <= 0) return false;
+
+    const int availW = W - kMargin * 2;
+    if (availW <= 0) return false;
+
+    const int N = static_cast<int>(groups.size());
+    int cols = std::max(1, std::min(N, (availW + kCardGap) / (kIdealCardW + kCardGap)));
+    int rawCardW = (availW - kCardGap * (cols - 1)) / cols;
+    while (cols < N && rawCardW > kIdealCardW + sc(30)) {
+        ++cols;
+        rawCardW = (availW - kCardGap * (cols - 1)) / cols;
+    }
+    if (rawCardW < kMinCardW) return false;
+    const int cardW = rawCardW;
+    const int gridW = cols * cardW + (cols - 1) * kCardGap;
+    if (gridW > availW) return false;
+
+    HFONT scaledFont = GetGroupFont(z);
+    HFONT prevFont   = scaledFont
+                       ? static_cast<HFONT>(SelectObject(hdc, scaledFont))
+                       : (sectionFont_ ? static_cast<HFONT>(SelectObject(hdc, sectionFont_))
+                                       : nullptr);
+
+    TEXTMETRICW tm{};
+    GetTextMetricsW(hdc, &tm);
+    const int fontH   = tm.tmHeight;
+    const int kBadgeH = std::max(sc(32), fontH + sc(10));
+    const int nameAreaW = cardW - kCardPadH * 2;
+    if (nameAreaW <= 0) {
+        if (prevFont) SelectObject(hdc, prevFont);
+        return false;
+    }
+
+    int maxNameBlockH = fontH;
+    for (const auto& g : groups) {
+        for (const auto& nm : g) {
+            std::wstring disp = nm;
+            if (!showLastNames) {
+                const auto sp = nm.find(L' ');
+                if (sp != std::wstring::npos) disp = nm.substr(0, sp);
+            }
+            RECT mr = {0, 0, nameAreaW, 10000};
+            DrawTextW(hdc, disp.c_str(), -1, &mr, DT_CALCRECT | DT_WORDBREAK | DT_CENTER);
+            maxNameBlockH = std::max(maxNameBlockH, static_cast<int>(mr.bottom));
+        }
+    }
+
+    int maxStudents = 0;
+    for (const auto& g : groups)
+        maxStudents = std::max(maxStudents, static_cast<int>(g.size()));
+
+    const int cardBodyH = kBadgeH / 2
+                        + kCardPadV
+                        + maxStudents * maxNameBlockH
+                        + std::max(0, maxStudents - 1) * kNameGap
+                        + kCardPadV;
+    const int rowStride = kBadgeH / 2 + cardBodyH + kCardGap;
+    const int rows = std::max(1, (N + cols - 1) / cols);
+    const int contentH = kMargin + (rows - 1) * rowStride + kBadgeH / 2 + cardBodyH + kMargin;
+
+    if (prevFont) SelectObject(hdc, prevFont);
+    return contentH <= H;
 }
 
 void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
     const std::vector<std::vector<std::wstring>>& groups,
-    bool showLastNames) const
+    bool showLastNames, float zoom) const
 {
-    // --- Layout constants ---
-    constexpr int kMargin    = 32;   // canvas edge margin
-    constexpr int kCardGap   = 20;   // gap between cards
-    constexpr int kBadgeH    = 36;   // pill badge height
-    constexpr int kCornerR   = 16;   // card corner radius
-    constexpr int kCardPadH  = 16;   // horizontal name padding inside card
-    constexpr int kCardPadV  = 18;   // vertical padding inside card (below badge overlap)
-    constexpr int kLineH     = 32;   // name row height (accommodates sectionFont)
-    constexpr int kIdealCardW = 200; // target card width — we stay at/below this
-    constexpr int kMinCardW  = 140;  // minimum acceptable card width
+    const float z = std::clamp(zoom, 0.5f, 5.0f);
+    auto sc = [z](int v) { return std::max(1, static_cast<int>(v * z)); };
+
+    // Structural constants — geometry scales with zoom
+    const int kMargin     = sc(32);
+    const int kCardGap    = sc(20);
+    const int kCornerR    = sc(14);
+    const int kCardPadH   = sc(14);
+    const int kCardPadV   = sc(12);
+    const int kNameGap    = sc(6);    // vertical gap between names inside card
+    const int kIdealCardW = sc(220);
+    const int kMinCardW   = sc(150);
 
     const int W = bounds.right - bounds.left;
     const int H = bounds.bottom - bounds.top;
+    (void)H;
 
     SetBkMode(hdc, TRANSPARENT);
 
-    // Placeholder when no groups have been generated yet
+    // ── Load the scaled font (Baloo 2 semibold at base-size × zoom) ──────────
+    HFONT scaledFont = GetGroupFont(z);
+    HFONT prevFont   = scaledFont
+                       ? static_cast<HFONT>(SelectObject(hdc, scaledFont))
+                       : (sectionFont_ ? static_cast<HFONT>(SelectObject(hdc, sectionFont_))
+                                       : nullptr);
+
+    // Measure actual font metrics so every dimension derives from real text height
+    TEXTMETRICW tm{};
+    GetTextMetricsW(hdc, &tm);
+    const int fontH   = tm.tmHeight;
+    const int kBadgeH = std::max(sc(32), fontH + sc(10));  // pill tall enough for font
+
+    // Placeholder
     if (groups.empty()) {
         RECT msgRect = bounds;
         InflateRect(&msgRect, -kMargin, 0);
-        HFONT old = uiFont_ ? static_cast<HFONT>(SelectObject(hdc, uiFont_)) : nullptr;
         SetTextColor(hdc, RGB(150, 150, 150));
         DrawTextW(hdc,
             L"Click \"Shuffle Groups\" in the panel to generate groups.",
-            -1, &msgRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        if (old) SelectObject(hdc, old);
+            -1, &msgRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_WORD_ELLIPSIS);
+        if (prevFont) SelectObject(hdc, prevFont);
         return;
     }
 
     const int N      = static_cast<int>(groups.size());
     const int availW = W - kMargin * 2;
 
-    // ── Column count: prefer kIdealCardW, never go below kMinCardW ──────────
-    // Start with the max columns that fit at ideal width, then cap to N.
-    int cols = std::max(1, std::min(N,
-                   (availW + kCardGap) / (kIdealCardW + kCardGap)));
+    // ── Columns: prefer kIdealCardW, push wider if too few columns fit ───────
+    int cols  = std::max(1, std::min(N,
+                    (availW + kCardGap) / (kIdealCardW + kCardGap)));
     int cardW = (availW - kCardGap * (cols - 1)) / cols;
-    // If that made cards too wide, try adding a column
-    while (cols < N && cardW > kIdealCardW + 20) {
+    while (cols < N && cardW > kIdealCardW + sc(30)) {
         ++cols;
         cardW = (availW - kCardGap * (cols - 1)) / cols;
     }
     cardW = std::max(kMinCardW, cardW);
 
-    // Center the card grid horizontally so it doesn't hug the left edge
+    // Center the grid horizontally
     const int gridW  = cols * cardW + (cols - 1) * kCardGap;
     const int startX = bounds.left + (W - gridW) / 2;
 
-    // ── Card height: badge-overhang + padding + names + padding ─────────────
+    // ── Measure the tallest name block across all cards ───────────────────────
+    // Each name is measured with DT_CALCRECT | DT_WORDBREAK so wrapping is counted.
+    const int nameAreaW = cardW - kCardPadH * 2;
+    int maxNameBlockH = fontH;   // minimum: one line
+    for (const auto& g : groups) {
+        for (const auto& nm : g) {
+            std::wstring disp = nm;
+            if (!showLastNames) {
+                const auto sp = nm.find(L' ');
+                if (sp != std::wstring::npos) disp = nm.substr(0, sp);
+            }
+            RECT mr = {0, 0, nameAreaW, 10000};
+            DrawTextW(hdc, disp.c_str(), -1, &mr,
+                      DT_CALCRECT | DT_WORDBREAK | DT_CENTER);
+            maxNameBlockH = std::max(maxNameBlockH, static_cast<int>(mr.bottom));
+        }
+    }
+
+    // Card body: badge-overhang + padding + names with gaps + padding
     int maxStudents = 0;
     for (const auto& g : groups)
         maxStudents = std::max(maxStudents, static_cast<int>(g.size()));
 
-    const int cardBodyH = kBadgeH / 2 + kCardPadV + maxStudents * kLineH + kCardPadV;
+    const int cardBodyH = kBadgeH / 2
+                        + kCardPadV
+                        + maxStudents * maxNameBlockH
+                        + std::max(0, maxStudents - 1) * kNameGap
+                        + kCardPadV;
     const int rowStride = kBadgeH / 2 + cardBodyH + kCardGap;
 
-    // Use sectionFont for names — larger and more legible at small card widths
-    HFONT nameFont = sectionFont_ ? sectionFont_ : uiFont_;
-    HFONT badgeFont = sectionFont_ ? sectionFont_ : uiFont_;
-    HFONT prevFont  = nameFont ? static_cast<HFONT>(SelectObject(hdc, nameFont)) : nullptr;
-
+    // ── Draw cards ────────────────────────────────────────────────────────────
     for (int i = 0; i < N; ++i) {
         const int col = i % cols;
         const int row = i / cols;
@@ -1059,7 +1229,7 @@ void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
         const int cardTop   = badgeTop + kBadgeH / 2;
         const int cardBot   = cardTop  + cardBodyH;
 
-        // ── White rounded card body ──────────────────────────────────────
+        // White rounded card
         {
             HBRUSH b = CreateSolidBrush(RGB(255, 255, 255));
             HPEN   p = CreatePen(PS_SOLID, 1, RGB(210, 210, 210));
@@ -1070,17 +1240,17 @@ void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
             DeleteObject(b); DeleteObject(p);
         }
 
-        // ── Dark pill badge ──────────────────────────────────────────────
+        // Dark pill badge
         const std::wstring badgeTxt = L"Group " + std::to_wstring(i + 1);
+        if (scaledFont) SelectObject(hdc, scaledFont);
         SIZE tsz{};
-        if (badgeFont) SelectObject(hdc, badgeFont);
         GetTextExtentPoint32W(hdc, badgeTxt.c_str(),
                               static_cast<int>(badgeTxt.size()), &tsz);
 
-        const int badgeW   = std::min(cardW - 8, static_cast<int>(tsz.cx) + 36);
-        const int badgeCX  = cardLeft + cardW / 2;
-        const int badgeL   = badgeCX - badgeW / 2;
-        const int badgeR   = badgeCX + badgeW / 2;
+        const int badgeW  = std::min(cardW - sc(8), static_cast<int>(tsz.cx) + sc(32));
+        const int badgeCX = cardLeft + cardW / 2;
+        const int badgeL  = badgeCX - badgeW / 2;
+        const int badgeR  = badgeCX + badgeW / 2;
         const int badgeBot = badgeTop + kBadgeH;
 
         {
@@ -1099,10 +1269,11 @@ void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
-        // ── Student names ────────────────────────────────────────────────
-        if (nameFont) SelectObject(hdc, nameFont);
+        // Names — each in its own measured block, word-wrapped if needed
+        if (scaledFont) SelectObject(hdc, scaledFont);
         SetTextColor(hdc, RGB(25, 25, 25));
         const auto& grp = groups[static_cast<size_t>(i)];
+        int nameY = cardTop + kBadgeH / 2 + kCardPadV;
         for (int j = 0; j < static_cast<int>(grp.size()); ++j) {
             const std::wstring& nm = grp[static_cast<size_t>(j)];
             std::wstring disp = nm;
@@ -1110,15 +1281,15 @@ void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
                 const auto sp = nm.find(L' ');
                 if (sp != std::wstring::npos) disp = nm.substr(0, sp);
             }
-            const int ny = cardTop + kBadgeH / 2 + kCardPadV + j * kLineH;
-            RECT nr = {cardLeft + kCardPadH, ny, cardRight - kCardPadH, ny + kLineH};
+            RECT nr = {cardLeft + kCardPadH, nameY,
+                       cardRight - kCardPadH, nameY + maxNameBlockH};
             DrawTextW(hdc, disp.c_str(), -1, &nr,
-                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                      DT_CENTER | DT_WORDBREAK | DT_VCENTER);
+            nameY += maxNameBlockH + kNameGap;
         }
     }
 
     if (prevFont) SelectObject(hdc, prevFont);
-    (void)H;
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,4 +1433,3 @@ bool Renderer::ExportChartToFile(HWND hwnd,
     DeleteObject(dib); DeleteDC(memDC);
     return WriteAllBytesAtomic(std::wstring(fileName), bytes);
 }
-

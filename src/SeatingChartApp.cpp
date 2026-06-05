@@ -34,6 +34,112 @@ static bool IsCommandActivation(int notif) {
     return notif == 0 || notif == BN_CLICKED;
 }
 
+static long double PermutationCount(int n, int r) {
+    if (n < 0 || r < 0 || r > n) return 0;
+    long double out = 1.0L;
+    for (int i = 0; i < r; ++i)
+        out *= static_cast<long double>(n - i);
+    return out;
+}
+
+static long double BinomialCount(int n, int k) {
+    if (n < 0 || k < 0 || k > n) return 0;
+    k = std::min(k, n - k);
+    long double out = 1.0L;
+    for (int i = 1; i <= k; ++i) {
+        out *= static_cast<long double>(n - k + i);
+        out /= static_cast<long double>(i);
+    }
+    return out;
+}
+
+static std::wstring FormatPermutationEstimate(long double value) {
+    if (!(value > 0.0L)) return L"0";
+    if (value < 1000.0L)
+        return std::to_wstring(static_cast<unsigned long long>(value + 0.5L));
+
+    if (value < 1.0e15L) {
+        unsigned long long n = static_cast<unsigned long long>(value + 0.5L);
+        std::wstring ws = std::to_wstring(n);
+        for (int i = static_cast<int>(ws.size()) - 3; i > 0; i -= 3)
+            ws.insert(static_cast<size_t>(i), 1, L',');
+        return ws;
+    }
+
+    const int exp10 = static_cast<int>(std::floor(std::log10(value)));
+    const long double mantissa = value / std::pow(10.0L, static_cast<long double>(exp10));
+    wchar_t buf[64]{};
+    swprintf_s(buf, L"%.2Lf × 10^%d", mantissa, exp10);
+    return buf;
+}
+
+static long double EstimateRuleAwarePermutations(const AppState& state) {
+    const int totalSeats = TotalLayoutSeats(state.layoutItems);
+    if (state.roster.empty() || totalSeats <= 0) return 0;
+
+    std::unordered_set<std::wstring> fixedRosterStudents;
+    for (const auto& item : state.layoutItems) {
+        for (const auto& occ : item.occupants) {
+            const auto cn = CanonicalName(occ);
+            if (!cn.empty()) fixedRosterStudents.insert(cn);
+        }
+    }
+
+    int fixedCount = 0;
+    for (const auto& name : state.roster) {
+        if (fixedRosterStudents.count(CanonicalName(name))) ++fixedCount;
+    }
+
+    const int freeStudents = std::max(0, static_cast<int>(state.roster.size()) - fixedCount);
+    const int openSeats    = std::max(0, totalSeats - fixedCount);
+    if (freeStudents == 0) return 0;
+    if (freeStudents > openSeats) return 0;
+
+    long double raw = PermutationCount(openSeats, freeStudents);
+
+    // Rule-aware heuristic shrinkage. Exact constrained counting is not practical
+    // here, but the estimate should respond monotonically as teachers add rules.
+    size_t factor = 1;
+    factor += state.restrictions.size();
+    factor += state.affinities.size();
+    factor += state.mustTogether.size() * 2;
+    for (const auto& grp : state.groupAffinities)
+        if (grp.size() > 1) factor += (grp.size() - 1) * 2;
+
+    if (factor > 1) raw /= static_cast<long double>(factor);
+    return raw;
+}
+
+static std::vector<std::vector<std::wstring>> PartitionRosterByPattern(
+    const std::vector<std::wstring>& roster, const std::vector<int>& pattern) {
+    std::vector<std::vector<std::wstring>> groups;
+    groups.reserve(pattern.size());
+    size_t pos = 0;
+    for (int sz : pattern) {
+        std::vector<std::wstring> grp;
+        grp.reserve(static_cast<size_t>(std::max(0, sz)));
+        for (int j = 0; j < sz && pos < roster.size(); ++j, ++pos)
+            grp.push_back(roster[pos]);
+        if (!grp.empty()) groups.push_back(std::move(grp));
+    }
+    return groups;
+}
+
+static long double OrderedGroupArrangementCount(int studentCount, const std::vector<int>& pattern) {
+    if (studentCount <= 0 || pattern.empty()) return 0;
+    int total = 0;
+    for (int sz : pattern) total += sz;
+    if (total != studentCount) return 0;
+
+    long double out = 1.0L;
+    int remaining = studentCount;
+    for (int sz : pattern) {
+        out *= BinomialCount(remaining, sz);
+        remaining -= sz;
+    }
+    return out;
+}
+
 static void RegisterToolWindowClass() {
     static bool registered = false;
     if (registered) return;
@@ -141,8 +247,8 @@ LRESULT CALLBACK CellEditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
     if (!app) return DefSubclassProc(hwnd, msg, wParam, lParam);
     if (msg == WM_KEYDOWN) {
         if (wParam == VK_RETURN) {
-            // Enter = commit immediately, no tab-advance
-            app->CommitInlineCellEdit(/*advance=*/false);
+            // Enter = commit and jump to the first-name field of the next student
+            app->AdvanceToNextStudent();
             return 0;
         }
         if (wParam == VK_TAB) {
@@ -169,8 +275,37 @@ LRESULT CALLBACK CellEditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
 void SeatingChartApp::SetStatus(const std::wstring& text) {
     state_.status = text;
     UpdateSidebarText(state_, controls_);
-    for (HWND h : {controls_.summaryLabel, controls_.statusLabel})
+    RefreshAutoAssignFooter();
+    for (HWND h : {controls_.summaryLabel, controls_.statusLabel, controls_.footerMetaLabel, controls_.footerProgress})
         if (h) RedrawWindow(h, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE);
+}
+
+void SeatingChartApp::RefreshAutoAssignFooter() {
+    const bool onGroupsTab = sidebar_.ActiveTab() == 3;
+    const auto estimatedTotal = onGroupsTab ? EstimateGroupPermutations()
+                                            : EstimateRuleAwarePermutations(state_);
+    if (controls_.footerProgress) {
+        const size_t limit = aaProgressLimit_ > 0 ? aaProgressLimit_ : kDefaultAutoAssignSearchLimit;
+        const int pct = (aaRunning_ && limit > 0)
+            ? static_cast<int>(std::clamp((aaProgressSteps_ * 100) / limit,
+                                          static_cast<size_t>(0),
+                                          static_cast<size_t>(100)))
+            : 0;
+        SendMessageW(controls_.footerProgress, PBM_SETPOS, pct, 0);
+    }
+    if (controls_.footerMetaLabel) {
+        const wchar_t* label = onGroupsTab ? L"Group permutations left: "
+                                           : L"Permutations left: ";
+        if (aaRunning_) {
+            const long double remaining =
+                std::max(0.0L, estimatedTotal - static_cast<long double>(aaProgressSteps_));
+            SetWindowTextW(controls_.footerMetaLabel,
+                (std::wstring(label) + FormatPermutationEstimate(remaining)).c_str());
+        } else {
+            SetWindowTextW(controls_.footerMetaLabel,
+                (std::wstring(label) + FormatPermutationEstimate(estimatedTotal)).c_str());
+        }
+    }
 }
 
 void SeatingChartApp::InvalidateChart() {
@@ -690,6 +825,7 @@ void SeatingChartApp::ApplyGroupRules(std::vector<std::vector<std::wstring>> gro
     tx->groupAffinities = std::move(groups);
     tx.Commit();
     SyncGroupRulesEditFromState(state_, controls_);
+    RefreshAutoAssignFooter();
     ScheduleAutoSave(&state_, hwnd_);
 }
 
@@ -768,43 +904,33 @@ void SeatingChartApp::AssignRosterSelectionToSeat() {
 
 // Build the sizes for groups given N students and base size k.
 // Returns a vector where each entry is the size of one group.
+// Groups will have size k or k+1 (never less than k, never more than k+1),
+// except when that's mathematically impossible — then distributes as evenly as possible.
 static std::vector<int> BuildGroupPattern(int N, int k) {
-    if (N < 2 || (k != 2 && k != 3)) return {};
+    if (N < 2 || k < 2) return {};
+
+    const int q = N / k;   // groups if all were size k
+    const int r = N % k;   // leftover students
 
     std::vector<int> pat;
-    if (k == 2) {
-        if (N == 2) return {2};
-        if (N == 3) return {3};
-        if (N % 2 == 0) {
-            pat.assign(static_cast<size_t>(N / 2), 2);
-            return pat;
-        }
-        if (N >= 5) {
-            pat.assign(static_cast<size_t>((N - 3) / 2), 2);
-            pat.push_back(3);
-            return pat;
-        }
-        return {};
+    if (r == 0) {
+        // Perfect split: q groups of k
+        pat.assign(static_cast<size_t>(q), k);
+    } else if (q >= r) {
+        // (q-r) groups of k, r groups of (k+1)
+        if (q - r > 0) pat.assign(static_cast<size_t>(q - r), k);
+        pat.insert(pat.end(), static_cast<size_t>(r), k + 1);
+    } else {
+        // Can't stay within [k, k+1] — distribute as evenly as possible.
+        // ceil(N/k) groups, sizes floor(N/numGroups) and ceil(N/numGroups).
+        const int numGroups = (N + k - 1) / k;
+        const int base      = N / numGroups;
+        const int extra     = N % numGroups;
+        if (numGroups - extra > 0)
+            pat.assign(static_cast<size_t>(numGroups - extra), base);
+        pat.insert(pat.end(), static_cast<size_t>(extra), base + 1);
     }
 
-    // k == 3
-    if (N == 3) return {3};
-    if (N == 4) return {2, 2};
-    if (N % 3 == 0) {
-        pat.assign(static_cast<size_t>(N / 3), 3);
-        return pat;
-    }
-    if (N % 3 == 1) {
-        if (N < 7) return {2, 2};
-        pat.assign(static_cast<size_t>((N - 4) / 3), 3);
-        pat.push_back(2);
-        pat.push_back(2);
-        return pat;
-    }
-
-    // N % 3 == 2
-    pat.assign(static_cast<size_t>(N / 3), 3);
-    pat.push_back(2);
     return pat;
 }
 
@@ -1025,14 +1151,19 @@ void SeatingChartApp::StartAutoAssign() {
 
     aaStartRevision_ = state_.Revision();
     aaRunning_ = true;
+    aaProgressSteps_ = 0;
+    aaProgressLimit_ = state_.autoAssignSearchLimit > 0 ? state_.autoAssignSearchLimit : kDefaultAutoAssignSearchLimit;
     UpdateButtonState(state_, controls_, aaRunning_);
+    RefreshAutoAssignFooter();
     SetStatus(L"Assigning seats…");
     UpdateWindow(controls_.sidebar);
 
     if (!BeginAutoAssign(hwnd_, state_, aaCancel_, aaThread_)) {
         aaRunning_ = false;
+        aaProgressSteps_ = 0;
         SetStatus(L"Could not start auto-assign");
         UpdateButtonState(state_, controls_, aaRunning_);
+        RefreshAutoAssignFooter();
     }
 }
 
@@ -1081,12 +1212,17 @@ LRESULT SeatingChartApp::OnAutoAssignDone(AutoAssignResult* result) {
     delete result;
     if (aaThread_) { CloseHandle(aaThread_); aaThread_ = nullptr; }
     aaRunning_ = false;
+    aaProgressSteps_ = 0;
     UpdateButtonState(state_, controls_, aaRunning_);
+    RefreshAutoAssignFooter();
     return 0;
 }
 
 LRESULT SeatingChartApp::OnAutoAssignProgress(size_t steps) {
     const size_t limit = state_.autoAssignSearchLimit > 0 ? state_.autoAssignSearchLimit : 500000;
+    aaProgressSteps_ = steps;
+    aaProgressLimit_ = limit;
+    RefreshAutoAssignFooter();
     const size_t pct = (limit > 0) ? (steps * 100 / limit) : 0;
     SetStatus(L"Assigning seats… " + std::to_wstring(steps / 1000) +
               L"k / " + std::to_wstring(limit / 1000) +
@@ -1723,7 +1859,7 @@ void SeatingChartApp::InitClassList() {
                     classList_.push_back(std::move(ci));
                 }
                 activeClassIdx_ = j.value("active", 0);
-                if (activeClassIdx_ >= static_cast<int>(classList_.size()))
+                if (activeClassIdx_ < 0 || activeClassIdx_ >= static_cast<int>(classList_.size()))
                     activeClassIdx_ = 0;
             }
         } catch (...) {}
@@ -1764,7 +1900,7 @@ void SeatingChartApp::SyncClassListBox() {
     for (auto& ci : classList_)
         SendMessageW(classListBox_, LB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(ci.name.c_str()));
-    if (activeClassIdx_ < static_cast<int>(classList_.size()))
+    if (activeClassIdx_ >= 0 && activeClassIdx_ < static_cast<int>(classList_.size()))
         SendMessageW(classListBox_, LB_SETCURSEL, activeClassIdx_, 0);
 }
 
@@ -1807,6 +1943,8 @@ void SeatingChartApp::SwitchToClass(int idx) {
     SyncRulesLists(state_, controls_);
     RefreshSelectionFlags();
     UpdateButtonState(state_, controls_, aaRunning_);
+    generatedGroups_.clear();   // stale groups belong to the old class
+    SyncGroupsOutput();
     SyncClassListBox();
     InvalidateChart();
     SetStatus(L"Switched to " + classList_[idx].name);
@@ -1817,9 +1955,6 @@ void SeatingChartApp::NewClass() {
     const std::wstring name = L"Class " + std::to_wstring(idx + 1);
     classList_.push_back({ name, L"class_" + std::to_wstring(idx) + L".json" });
     SaveClassList();
-    const int previous = activeClassIdx_;
-    activeClassIdx_ = -1;
-    if (previous >= 0 && previous < static_cast<int>(classList_.size())) activeClassIdx_ = previous;
     SwitchToClass(idx);
 }
 
@@ -2029,19 +2164,30 @@ void SeatingChartApp::RefreshGroupConfigList() {
     if (!controls_.groupConfigList) return;
     SendMessageW(controls_.groupConfigList, LB_RESETCONTENT, 0, 0);
     const int N = static_cast<int>(state_.roster.size());
-    if (N == 0) {
+    if (N < 4) {
         SendMessageW(controls_.groupConfigList, LB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(L"(No students in roster)"));
-        if (controls_.groupSizeEdit) SetWindowTextW(controls_.groupSizeEdit, L"2");
+                     reinterpret_cast<LPARAM>(N == 0 ? L"(No students in roster)"
+                                                     : L"(Need at least 4 students)"));
+        if (controls_.groupSizeEdit) {
+            wchar_t buf[16]{};
+            GetWindowTextW(controls_.groupSizeEdit, buf, static_cast<int>(std::size(buf)));
+            if (wcscmp(buf, L"2") != 0)
+                SetWindowTextW(controls_.groupSizeEdit, L"2");
+        }
         groupSizePref_ = 2;
         return;
     }
 
-    const std::vector<int> options = (N >= 6 && N % 3 == 0)
-        ? std::vector<int>{2, 3}
-        : std::vector<int>{2};
-
     int bestRow = 0;
+    std::vector<int> options;
+    const int maxK = (N + 1) / 2;
+    for (int k = 2; k <= maxK; ++k) {
+        const auto pattern = BuildGroupPattern(N, k);
+        if (static_cast<int>(pattern.size()) < 2) continue;
+        options.push_back(k);
+    }
+    if (options.empty()) options.push_back(2);
+
     for (int i = 0; i < static_cast<int>(options.size()); ++i) {
         const int base = options[static_cast<size_t>(i)];
         const auto pattern = BuildGroupPattern(N, base);
@@ -2082,6 +2228,27 @@ void SeatingChartApp::ShuffleGroups() {
     const std::vector<int> pattern = BuildGroupPattern(N, base);
     if (pattern.empty()) { generatedGroups_.clear(); SyncGroupsOutput(); return; }
 
+    // Check whether every possible student pair has already been grouped together.
+    // When all C(N,2) pairs are in history, every future shuffle will repeat a pairing.
+    if (false && !groupPairHistory_.empty()) {
+        bool exhausted = true;
+        for (int i = 0; i < N && exhausted; ++i) {
+            for (int j = i + 1; j < N && exhausted; ++j) {
+                if (!groupPairHistory_.count(GroupPairKey(state_.roster[i], state_.roster[j])))
+                    exhausted = false;
+            }
+        }
+        if (exhausted) {
+            MessageBoxW(hwnd_,
+                L"All unique group pairings have been used.\n\n"
+                L"Every student has now been grouped with every other student at least once.\n\n"
+                L"Click “Reset Shuffle Memory” to start generating fresh arrangements.",
+                L"Shuffle Exhausted",
+                MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+    }
+
     auto scoreGroups = [&](const std::vector<std::vector<std::wstring>>& groups) {
         size_t score = 0;
         for (const auto& grp : groups) {
@@ -2100,47 +2267,35 @@ void SeatingChartApp::ShuffleGroups() {
     std::vector<std::vector<std::wstring>> bestGroups;
     size_t bestScore = std::numeric_limits<size_t>::max();
 
-    for (int attempt = 0; attempt < 200; ++attempt) {
+    for (int attempt = 0; attempt < 2000; ++attempt) {
         std::vector<std::wstring> shuffled = state_.roster;
         std::shuffle(shuffled.begin(), shuffled.end(), rng);
 
-        std::vector<std::vector<std::wstring>> groups;
-        groups.reserve(pattern.size());
-        size_t pos = 0;
-        for (int sz : pattern) {
-            std::vector<std::wstring> grp;
-            for (int j = 0; j < sz && pos < shuffled.size(); ++j, ++pos)
-                grp.push_back(shuffled[pos]);
-            if (!grp.empty()) groups.push_back(std::move(grp));
-        }
+        std::vector<std::vector<std::wstring>> groups = PartitionRosterByPattern(shuffled, pattern);
+        if (groups.size() != pattern.size() || !CandidateGroupsMeetConstraints(groups))
+            continue;
         const size_t score = scoreGroups(groups);
-        if (groups.size() == pattern.size() && score <= bestScore) {
+        if (score <= bestScore) {
             bestScore = score;
             bestGroups = std::move(groups);
         }
     }
 
     if (bestGroups.empty()) {
-        std::vector<std::wstring> shuffled = state_.roster;
-        std::shuffle(shuffled.begin(), shuffled.end(), rng);
-        size_t pos = 0;
-        for (int sz : pattern) {
-            std::vector<std::wstring> grp;
-            for (int j = 0; j < sz && pos < shuffled.size(); ++j, ++pos)
-                grp.push_back(shuffled[pos]);
-            if (!grp.empty()) bestGroups.push_back(std::move(grp));
-        }
+        MessageBoxW(hwnd_,
+            L"No valid grouping was found under the current Groups history rules.\n\n"
+            L"Try Reset Shuffle Memory, change the group size, or relax one of the history checkboxes.",
+            L"Unable to Shuffle Groups",
+            MB_OK | MB_ICONWARNING);
+        SetStatus(L"Groups shuffle is blocked by the current history rules");
+        RefreshAutoAssignFooter();
+        return;
     }
 
     generatedGroups_ = std::move(bestGroups);
-    for (const auto& grp : generatedGroups_) {
-        for (size_t i = 0; i < grp.size(); ++i) {
-            for (size_t j = i + 1; j < grp.size(); ++j) {
-                ++groupPairHistory_[GroupPairKey(grp[i], grp[j])];
-            }
-        }
-    }
+    RecordGroupShuffleHistory(generatedGroups_);
     SyncGroupsOutput();
+    RefreshAutoAssignFooter();
 }
 
 void SeatingChartApp::SyncGroupsOutput() {
@@ -2165,6 +2320,9 @@ void SeatingChartApp::SyncGroupsOutput() {
 
 void SeatingChartApp::ResetGroupShuffleMemory() {
     groupPairHistory_.clear();
+    groupNumberHistory_.clear();
+    groupPartnerSetHistory_.clear();
+    RefreshAutoAssignFooter();
     SetStatus(L"Group shuffle memory reset — all students can pair again");
 }
 
@@ -2181,17 +2339,21 @@ void SeatingChartApp::RefreshGroupCombo() {
     int preservedK = curText[0] ? _wtoi(curText) : groupSizePref_;
 
     SendMessageW(controls_.groupSizeCombo, CB_RESETCONTENT, 0, 0);
-    if (N < 2) {
+    if (N < 4) {
+        // Need at least 4 students to form 2 groups of 2
         SendMessageW(controls_.groupSizeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"—"));
         SendMessageW(controls_.groupSizeCombo, CB_SETCURSEL, 0, 0);
         if (controls_.groupOrValLabel) SetWindowTextW(controls_.groupOrValLabel, L"");
         return;
     }
 
-    // Valid base sizes: k in [2 .. floor(N/2)], each giving at least 2 groups
-    const int maxK = N / 2;
+    // Offer all k where BuildGroupPattern gives at least 2 groups.
+    // Max k = ceil(N/2) = (N+1)/2: ensures at least 2 groups.
+    const int maxK = (N + 1) / 2;
     int selIdx = 0;
     for (int k = 2; k <= maxK; ++k) {
+        const auto pat = BuildGroupPattern(N, k);
+        if (static_cast<int>(pat.size()) < 2) continue;
         const std::wstring txt = std::to_wstring(k);
         const int idx = static_cast<int>(
             SendMessageW(controls_.groupSizeCombo, CB_ADDSTRING, 0,
@@ -2203,18 +2365,183 @@ void SeatingChartApp::RefreshGroupCombo() {
     }
     SendMessageW(controls_.groupSizeCombo, CB_SETCURSEL, selIdx, 0);
 
-    // Get the currently selected k and update the "or N" label
+    // Derive the selected k and update the "or N" label
     wchar_t buf[16]{};
     SendMessageW(controls_.groupSizeCombo, CB_GETLBTEXT, selIdx, reinterpret_cast<LPARAM>(buf));
     const int k = buf[0] ? _wtoi(buf) : 2;
     groupSizePref_ = k;
 
-    const int extra = N % k; // if 0 → all groups equal size; else some get k+1
+    const auto pat = BuildGroupPattern(N, k);
     if (controls_.groupOrValLabel) {
-        if (extra == 0)
+        if (pat.empty()) {
             SetWindowTextW(controls_.groupOrValLabel, L"—");
-        else
-            SetWindowTextW(controls_.groupOrValLabel, std::to_wstring(k + 1).c_str());
+        } else {
+            const int minSz = *std::min_element(pat.begin(), pat.end());
+            const int maxSz = *std::max_element(pat.begin(), pat.end());
+            if (minSz == maxSz)
+                SetWindowTextW(controls_.groupOrValLabel, L"—");
+            else
+                SetWindowTextW(controls_.groupOrValLabel, std::to_wstring(maxSz).c_str());
+        }
+    }
+}
+
+void SeatingChartApp::RefreshGroupRuleToggleLabels() {
+    if (controls_.groupKeepApartToggle) {
+        SetWindowTextW(controls_.groupKeepApartToggle,
+            sidebar_.GroupKeepApartCollapsed() ? L"Show Keep Apart Rules"
+                                               : L"Hide Keep Apart Rules");
+    }
+    if (controls_.groupKeepTogetherToggle) {
+        SetWindowTextW(controls_.groupKeepTogetherToggle,
+            sidebar_.GroupKeepTogetherCollapsed() ? L"Show Keep Together Rules"
+                                                  : L"Hide Keep Together Rules");
+    }
+}
+
+bool SeatingChartApp::GroupAvoidSameNumberEnabled() const {
+    return controls_.groupAvoidSameNumberCheck &&
+           SendMessageW(controls_.groupAvoidSameNumberCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+bool SeatingChartApp::GroupAvoidSamePartnersEnabled() const {
+    return controls_.groupAvoidSamePartnersCheck &&
+           SendMessageW(controls_.groupAvoidSamePartnersCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+std::vector<int> SeatingChartApp::CurrentGroupPattern() const {
+    const int N = static_cast<int>(state_.roster.size());
+    if (N == 0) return {};
+
+    int base = std::max(2, groupSizePref_);
+    if (controls_.groupSizeCombo) {
+        const int sel = static_cast<int>(SendMessageW(controls_.groupSizeCombo, CB_GETCURSEL, 0, 0));
+        if (sel >= 0) {
+            wchar_t buf[16]{};
+            SendMessageW(controls_.groupSizeCombo, CB_GETLBTEXT, sel, reinterpret_cast<LPARAM>(buf));
+            if (buf[0]) base = std::max(2, _wtoi(buf));
+        }
+    }
+    return BuildGroupPattern(N, base);
+}
+
+bool SeatingChartApp::CandidateGroupsMeetConstraints(
+    const std::vector<std::vector<std::wstring>>& groups) const {
+    if (groups.empty()) return false;
+
+    std::unordered_map<std::wstring, int> groupIndexByStudent;
+    for (size_t gi = 0; gi < groups.size(); ++gi) {
+        for (const auto& name : groups[gi])
+            groupIndexByStudent[CanonicalName(name)] = static_cast<int>(gi);
+    }
+
+    for (const auto& rule : state_.restrictions) {
+        const auto a = CanonicalName(rule.first);
+        const auto b = CanonicalName(rule.second);
+        const auto ia = groupIndexByStudent.find(a);
+        const auto ib = groupIndexByStudent.find(b);
+        if (ia != groupIndexByStudent.end() && ib != groupIndexByStudent.end() && ia->second == ib->second)
+            return false;
+    }
+
+    for (const auto& rule : state_.affinities) {
+        const auto a = CanonicalName(rule.first);
+        const auto b = CanonicalName(rule.second);
+        const auto ia = groupIndexByStudent.find(a);
+        const auto ib = groupIndexByStudent.find(b);
+        if (ia != groupIndexByStudent.end() && ib != groupIndexByStudent.end() && ia->second != ib->second)
+            return false;
+    }
+
+    for (const auto& rule : state_.mustTogether) {
+        const auto a = CanonicalName(rule.first);
+        const auto b = CanonicalName(rule.second);
+        const auto ia = groupIndexByStudent.find(a);
+        const auto ib = groupIndexByStudent.find(b);
+        if (ia != groupIndexByStudent.end() && ib != groupIndexByStudent.end() && ia->second != ib->second)
+            return false;
+    }
+
+    const bool avoidSameNumber = GroupAvoidSameNumberEnabled();
+    const bool avoidSamePartners = GroupAvoidSamePartnersEnabled();
+    if (!avoidSameNumber && !avoidSamePartners) return true;
+
+    for (size_t gi = 0; gi < groups.size(); ++gi) {
+        std::unordered_set<std::wstring> groupMembers;
+        for (const auto& name : groups[gi])
+            groupMembers.insert(CanonicalName(name));
+
+        for (const auto& name : groups[gi]) {
+            const auto canon = CanonicalName(name);
+
+            if (avoidSameNumber) {
+                const auto hist = groupNumberHistory_.find(canon);
+                if (hist != groupNumberHistory_.end() &&
+                    hist->second.count(static_cast<int>(gi)) != 0)
+                    return false;
+            }
+
+            if (avoidSamePartners) {
+                std::unordered_set<std::wstring> currentPartners = groupMembers;
+                currentPartners.erase(canon);
+                if (currentPartners.size() < 2) continue;
+
+                const auto hist = groupPartnerSetHistory_.find(canon);
+                if (hist == groupPartnerSetHistory_.end()) continue;
+                for (const auto& priorPartners : hist->second) {
+                    size_t overlap = 0;
+                    for (const auto& partner : currentPartners) {
+                        if (priorPartners.count(partner) != 0 && ++overlap >= 2)
+                            return false;
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+long double SeatingChartApp::EstimateGroupPermutations() const {
+    const int N = static_cast<int>(state_.roster.size());
+    const auto pattern = CurrentGroupPattern();
+    if (N == 0 || pattern.empty()) return 0;
+
+    const long double total = OrderedGroupArrangementCount(N, pattern);
+    if (!(total > 0.0L)) return 0;
+
+    std::vector<std::wstring> shuffled = state_.roster;
+    std::mt19937 rng(static_cast<unsigned>(GetTickCount64()));
+    constexpr int kSamples = 256;
+    int validSamples = 0;
+
+    for (int i = 0; i < kSamples; ++i) {
+        std::shuffle(shuffled.begin(), shuffled.end(), rng);
+        if (CandidateGroupsMeetConstraints(PartitionRosterByPattern(shuffled, pattern)))
+            ++validSamples;
+    }
+
+    if (validSamples == 0) return 0;
+    return total * (static_cast<long double>(validSamples) / static_cast<long double>(kSamples));
+}
+
+void SeatingChartApp::RecordGroupShuffleHistory(const std::vector<std::vector<std::wstring>>& groups) {
+    for (size_t gi = 0; gi < groups.size(); ++gi) {
+        std::unordered_set<std::wstring> groupMembers;
+        for (const auto& name : groups[gi])
+            groupMembers.insert(CanonicalName(name));
+
+        for (size_t i = 0; i < groups[gi].size(); ++i) {
+            const auto canon = CanonicalName(groups[gi][i]);
+            groupNumberHistory_[canon].insert(static_cast<int>(gi));
+
+            std::unordered_set<std::wstring> partners = groupMembers;
+            partners.erase(canon);
+            groupPartnerSetHistory_[canon].push_back(std::move(partners));
+
+            for (size_t j = i + 1; j < groups[gi].size(); ++j)
+                ++groupPairHistory_[GroupPairKey(groups[gi][i], groups[gi][j])];
+        }
     }
 }
 
@@ -2266,6 +2593,23 @@ void SeatingChartApp::BeginInlineCellEdit(int item, int subItem) {
                           kCellEditSubclassId, reinterpret_cast<DWORD_PTR>(this));
         SetFocus(cellEdit_.wnd);
         SendMessageW(cellEdit_.wnd, EM_SETSEL, 0, -1); // select all
+    }
+}
+
+// Commit the active cell edit and open the first-name cell of the next row.
+// Called by the Enter key handler in CellEditSubclassProc.
+void SeatingChartApp::AdvanceToNextStudent() {
+    const int currentItem = cellEdit_.item;
+    CommitInlineCellEdit(false);
+    // After commit, state_.roster may have grown (if a new student was added).
+    // nextItem is always currentItem + 1 — it may be an existing student or the ghost row.
+    const int nextItem  = currentItem + 1;
+    const int ghostIdx  = static_cast<int>(state_.roster.size());
+    if (nextItem <= ghostIdx) {
+        // The ghost row must be flagged as a "new student" edit; otherwise
+        // subsequent Enter presses take the existing-row path and do nothing.
+        cellEdit_.isNew = (nextItem == ghostIdx);
+        BeginInlineCellEdit(nextItem, 1);
     }
 }
 
@@ -2576,6 +2920,7 @@ LRESULT SeatingChartApp::OnCreate(HWND hwnd) {
 
     ApplyFontsToControls(controls_, renderer_);
     ApplyThemeToListViews(); // set bg/text colours so selection is visible from the start
+    RefreshGroupRuleToggleLabels();
     if (classListBox_) SendMessageW(classListBox_, WM_SETFONT,
                                     reinterpret_cast<WPARAM>(renderer_.UiFont()), TRUE);
     if (addClassBtn_)  SendMessageW(addClassBtn_,  WM_SETFONT,
@@ -2831,6 +3176,24 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
                                       ApplyGroupRules(SplitGroupInput(GetWindowTextStr(controls_.groupRulesEdit)));
                                   } break;
     case kGroupResetId:           if (notif==BN_CLICKED) ResetGroupShuffleMemory(); break;
+    case kGroupKeepApartToggleId:
+        if (notif == BN_CLICKED) {
+            sidebar_.SetGroupKeepApartCollapsed(!sidebar_.GroupKeepApartCollapsed());
+            RefreshGroupRuleToggleLabels();
+            sidebar_.Recalculate(controls_.sidebar, state_, controls_, renderer_);
+        }
+        break;
+    case kGroupKeepTogetherToggleId:
+        if (notif == BN_CLICKED) {
+            sidebar_.SetGroupKeepTogetherCollapsed(!sidebar_.GroupKeepTogetherCollapsed());
+            RefreshGroupRuleToggleLabels();
+            sidebar_.Recalculate(controls_.sidebar, state_, controls_, renderer_);
+        }
+        break;
+    case kGroupAvoidSameNumberId:
+    case kGroupAvoidSamePartnersId:
+        if (notif == BN_CLICKED) RefreshAutoAssignFooter();
+        break;
     case kShowLastNamesId:        if (notif==BN_CLICKED) ToggleShowLastNames(); break;
     case kAddSmartboardId:        if (notif==BN_CLICKED) editor_.AddItem(LayoutItemType::Smartboard); break;
     case kAddTrapezoidId:         if (notif==BN_CLICKED) editor_.AddItem(LayoutItemType::TrapezoidDesk); break;
@@ -2941,6 +3304,7 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
                     tx.Commit();
                     SyncRulesLists(state_, controls_);
                     SyncRestrictionEditFromRules(state_, controls_);
+                    RefreshAutoAssignFooter();
                     ScheduleSave();
                 }
             }
@@ -2955,6 +3319,7 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
                 tx.Commit();
                 SyncRulesLists(state_, controls_);
                 SyncRestrictionEditFromRules(state_, controls_);
+                RefreshAutoAssignFooter();
                 ScheduleSave();
             }
         }
@@ -2972,6 +3337,7 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
                     tx.Commit();
                     SyncRulesLists(state_, controls_);
                     SyncRestrictionEditFromRules(state_, controls_);
+                    RefreshAutoAssignFooter();
                     ScheduleSave();
                 }
             }
@@ -2986,6 +3352,7 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
                 tx.Commit();
                 SyncRulesLists(state_, controls_);
                 SyncRestrictionEditFromRules(state_, controls_);
+                RefreshAutoAssignFooter();
                 ScheduleSave();
             }
         }
@@ -3059,6 +3426,7 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
                 const int k = _wtoi(buf);
                 if (k >= 2) { groupSizePref_ = k; }
                 RefreshGroupCombo(); // update the "or N" label
+                RefreshAutoAssignFooter();
             }
         }
         break;
@@ -3488,8 +3856,11 @@ LRESULT SeatingChartApp::OnPaint() {
     PAINTSTRUCT ps{};
     HDC hdc = BeginPaint(hwnd_, &ps);
     if (sidebar_.ActiveTab() == 3) {
+        groupsZoom_ = renderer_.ClampGroupsZoomToFit(
+            hwnd_, layout_.chart, generatedGroups_, state_.showLastNames, groupsZoom_);
         renderer_.PaintGroupsCanvasBuffered(hwnd_, hdc, layout_.chart,
-                                            generatedGroups_, state_.showLastNames);
+                                            generatedGroups_, state_.showLastNames,
+                                            groupsZoom_);
     } else {
         RECT rb{};
         if (rubberBandSelecting_) {
@@ -3555,6 +3926,7 @@ LRESULT SeatingChartApp::HandleSidebarMessage(HWND sidebar, UINT msg,
                 sidebar_.Recalculate(controls_.sidebar, state_, controls_, renderer_);
                 if (tab == 3 || prevTab == 3) InvalidateChart();
             }
+            RefreshAutoAssignFooter();
         } else if (hdr->idFrom == kRosterViewId &&
                    (hdr->code == NM_CLICK || hdr->code == NM_DBLCLK)) {
             auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lParam);
@@ -3751,6 +4123,20 @@ LRESULT SeatingChartApp::HandleMessage(HWND hwnd, UINT msg,
         SetBkMode(hdc, OPAQUE);
         return reinterpret_cast<LRESULT>(renderer_.InputBrush());
     }
+    case WM_MOUSEWHEEL:
+        if (sidebar_.ActiveTab() == 3 && (LOWORD(wParam) & MK_CONTROL)) {
+            const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            const float desiredZoom = std::clamp(groupsZoom_ + (delta > 0 ? 0.1f : -0.1f), 0.5f, 5.0f);
+            if (desiredZoom > groupsZoom_) {
+                groupsZoom_ = renderer_.ClampGroupsZoomToFit(
+                    hwnd_, layout_.chart, generatedGroups_, state_.showLastNames, desiredZoom);
+            } else {
+                groupsZoom_ = desiredZoom;
+            }
+            InvalidateChart();
+            return 0;
+        }
+        return DefWindowProcW(hwnd_, msg, wParam, lParam);
     case WM_PAINT:   return OnPaint();
     case WM_DESTROY: OnDestroy(); PostQuitMessage(0); return 0;
     default:         return DefWindowProcW(hwnd, msg, wParam, lParam);
