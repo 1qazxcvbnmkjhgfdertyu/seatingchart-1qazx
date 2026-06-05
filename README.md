@@ -179,3 +179,16 @@ These were analyzed for ideas. See the analysis and proposed improvements in the
 - Advanced interactive seat map editors (cenksari/react-seatmap-creator, ibrahimrahhal/seatmap).
 
 The native C++ solver (src/AutoAssign.*) and layout system (src/LayoutEditor.*) are already fairly advanced; the references provide concrete extensions rather than wholesale replacement.
+
+## Convenience Terminal Commands
+
+If you have the wrappers set up in your `PATH` (they live in `%USERPROFILE%\bin`), the following work from any directory:
+
+- `seating-chart`  
+  Always rebuilds the latest (arm64) and launches the app.
+
+- `push seating-chart` (or `push-seating-chart`)  
+  Pushes the latest committed changes to the GitHub remote.  
+  Shows a status summary first and warns if you have uncommitted edits.
+
+The real logic for the push command lives in `push-seating-chart.ps1` in the project root (easy to edit/version). The `.cmd` files are just thin launchers.
