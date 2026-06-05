@@ -1,0 +1,61 @@
+{
+  "name": "react-seatmap-creator",
+  "version": "0.1.51",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@hello-pangea/dnd": "^18.0.1",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "react-hot-toast": "^2.6.0",
+    "react-map-interaction": "^2.1.0",
+    "react-router-dom": "^7.10.1",
+    "react-scripts": "5.0.1",
+    "react-tooltip": "^5.30.0",
+    "typescript": "^5.9.3",
+    "uuid": "^13.0.0"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "set \"GENERATE_SOURCEMAP=false\" && react-scripts build",
+    "eslint": "eslint ./src",
+    "prettier": "prettier --check **",
+    "prettier fix": "prettier --write **"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@types/react-tooltip": "^4.2.4",
+    "@types/uuid": "^11.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.49.0",
+    "@typescript-eslint/parser": "^8.49.0",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-config-react-app": "^7.0.1",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-prettier": "^5.5.4",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "prettier": "^3.7.4",
+    "typescript-eslint": "^8.49.0"
+  }
+}

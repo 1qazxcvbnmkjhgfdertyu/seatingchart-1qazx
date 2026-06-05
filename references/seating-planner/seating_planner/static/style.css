@@ -1,0 +1,30 @@
+body {
+    font-family: sans-serif;
+}
+
+table.plan thead th {
+    border-bottom: 1px solid black;
+}
+
+table.plan tfoot td {
+    border-top: 1px solid black;
+    font-size: small;
+}
+
+.plans-container {
+    overflow-y: auto;
+}
+
+#connections-controls {
+    width: 100%;
+    border: 1px solid black;
+}
+#connections-controls td {
+    vertical-align: top;
+}
+
+.upload-form, .download-form {
+    border: 1px solid #888;
+    padding: 3px;
+    width: auto;
+}

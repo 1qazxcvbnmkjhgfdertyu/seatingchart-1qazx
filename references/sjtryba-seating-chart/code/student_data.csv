@@ -1,0 +1,21 @@
+Student Name,Close to Teacher,Distrators,Conclicts,Reading,Math,Chattiness,Focus,Safety
+Micah,,,Ja'Miehz,1,1,0,1,1
+Kamerin,,Kieran,Ja'Miehz,0,-1,-1,-1,-1
+Jamie,,Rae'Jhaunnie,Hunter,-1,0,-1,-1,0
+Kieran,,Kamerin,,-1,1,1,1,1
+Kaleah,,Rae'Jhaunnie,,-1,-1,-1,0,-1
+Chase,,Arcuri,,-1,-1,0,0,1
+Sharlene,,,,1,1,1,1,1
+Juan,,,,0,0,1,1,1
+Grace,,Nhi'Yeemah,,1,1,0,1,1
+Rae'Jhaunnie,,,,0,1,0,0,-1
+Alfred,,,Ja'Miehz,0,1,-1,-1,-1
+Arcuri,,Chase,Ja'Miehz,-1,0,0,-1,-1
+Hunter,,,Jamie,0,1,-1,1,0
+Payton,,,Ja'Miehz Alfred,0,0,-1,-1,-1
+Julien,,,,1,1,1,1,1
+Apollo,,Daniel,,1,1,-1,-1,-1
+Daniel,TRUE,Apollo,Ja'Miehz,0,0,-1,-1,1
+Winston,,Hunter,,0,1,0,0,1
+Nhi'Yeemah,,Grace Jamie,Ja'Miehz,0,0,-1,-1,1
+Trenton,,,,0,0,1,1,1

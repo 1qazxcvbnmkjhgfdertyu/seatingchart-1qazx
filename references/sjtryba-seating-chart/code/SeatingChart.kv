@@ -1,0 +1,272 @@
+<MainScreen>:
+    orientation: "vertical"
+
+    CustomScreenManager:
+        id: screen_manager
+
+        SeatingChartScreen:
+            id: seating_chart_screen
+            name: "seating_chart_screen"
+
+        StudentScreen:
+            id: student_screen
+            name: "student_screen"
+
+        DistractionsScreen:
+            id: distractions_screen
+            name: "distractions_screen"
+
+        ConflictsScreen:
+            id: conflicts_screen
+            name: "conflicts_screen"
+
+    BoxLayout:
+        size_hint_y: 0.1
+        orientation: "horizontal"
+
+        Button:
+            id: seating_chart_screen_button
+            text: "Seating Chart"
+            on_press:
+                screen_manager.transition.direction = "right"
+                screen_manager.current = "seating_chart_screen"
+
+        Button:
+            id: students_screen_button
+            text: "Students"
+            on_press:
+                seating_chart_screen.stop_mutation()
+                if screen_manager.current == "seating_chart_screen": screen_manager.transition.direction = "left"
+                if screen_manager.current == "distractions_screen": screen_manager.transition.direction = "right"
+                if screen_manager.current == "conflicts_screen": screen_manager.transition.direction = "right"
+                screen_manager.current = "student_screen"
+
+        Button:
+            id: distractions_screen_button
+            text: "Distractions"
+            on_press:
+                seating_chart_screen.stop_mutation()
+                if screen_manager.current == "seating_chart_screen": screen_manager.transition.direction = "left"
+                if screen_manager.current == "student_screen": screen_manager.transition.direction = "left"
+                if screen_manager.current == "conflicts_screen": screen_manager.transition.direction = "right"
+                screen_manager.current = "distractions_screen"
+
+        Button:
+            id: conflicts_screen_button
+            text: "Conflicts"
+            on_press:
+                seating_chart_screen.stop_mutation()
+                screen_manager.transition.direction = "left"
+                screen_manager.current = "conflicts_screen"
+
+<SeatingChartScreen>:
+    BoxLayout:
+        orientation: "vertical"
+
+        BoxLayout:
+            size_hint_y: 0.1
+
+            BoxLayout:
+                orientation: "vertical"
+
+                ToggleButton:
+                    id: optimize_button
+                    text: "Optimize"
+                    on_state:
+                        if self.state == "down": root.optimize()
+                        if self.state == "down": self.text = "Working..."
+                        if self.state == "normal": self.text = "Optimize"
+                        if self.state == "normal": root.stop_mutation()
+
+                ProgressBar:
+                    id: progress
+                    size_hint_y: 0.1
+                    max: root.max_mutations
+
+            Button:
+                id: shuffle
+                text: "Shuffle"
+                on_release:
+                    root.stop_mutation()
+                    root.shuffle_students()
+
+        FloatLayout:
+            id: seating_chart
+
+<StudentScreen>:
+    ScrollView:
+        do_scroll_x: False
+
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_y: None
+            height: 500
+
+            Button:
+                id: student_drop_down_button
+                size_hint_y: 0.3
+                text: "All Students"
+                on_press: root.parent.parent.create_student_drop_down()
+                on_release: root.parent.parent.display_student_drop_down()
+
+            GridLayout:
+                cols: 2
+
+                Label:
+                    text: "Student's Name:"
+                TextInput:
+                    id: student_name
+                    multiline: False
+                    padding_y: ( self.height - self.line_height ) / 2
+                    text: ""
+                    hint_text: "Spencer"
+
+                Label:
+                    text: "Close to board:"
+                CheckBox:
+                    id: close_to_board
+
+            Label:
+                text_size: self.size
+                halign: "center"
+                text: "Rank " + student_name.text + " on their ability in to following areas.\nIf the subject does not apply, mark it as 'N/A'."
+            Label:
+                halign: "justify"
+                text: "-2: Low\n 0: Average\n 2: High"
+
+            BoxLayout:
+                orientation: "horizontal"
+                size_hint_y: 0.3
+
+                Label:
+                    size_hint_x: 1.5
+                    text: "Subject"
+                Label:
+                    text: "-2"
+                Label:
+                    text: "-1"
+                Label:
+                    text: "0"
+                Label:
+                    text: "1"
+                Label:
+                    text: "2"
+                Label:
+                    text: "N/A"
+
+            Attribute:
+                id: reading
+                attribute: "Reading"
+
+            Attribute:
+                id: writing
+                attribute: "Writing"
+
+            Attribute:
+                id: math
+                attribute: "Math"
+
+            Attribute:
+                id: science
+                attribute: "Science"
+
+            Attribute:
+                id: chattiness
+                attribute: "Chattiness"
+
+            Attribute:
+                id: focus
+                attribute: "Focus"
+
+            Attribute:
+                id: safety
+                attribute: "Safety"
+
+            BoxLayout:
+                orientation: "horizontal"
+                size_hint_y: 0.2
+
+                Button:
+                    text: "Save"
+                    on_press: root.parent.parent.save_student()
+
+                Button:
+                    id: seating_chart_button
+                    text: "Cancel"
+                    on_press:
+                        root.manager.transition.direction = "right"
+                        root.manager.current = "seating_chart_screen"
+
+<DistractionsScreen>:
+    ScrollView:
+        do_scroll_x: False
+
+    BoxLayout:
+        BoxLayout:
+            orientation: "vertical"
+            id: left
+        Label:
+            text: "Distractions"
+        BoxLayout:
+            orientation: "vertical"
+            id: right
+
+<ConflictsScreen>:
+    ScrollView:
+        do_scroll_x: False
+
+    BoxLayout:
+        BoxLayout:
+            orientation: "vertical"
+            id: left
+        Label:
+            text: "Conflicts"
+        BoxLayout:
+            orientation: "vertical"
+            id: right
+
+<Attribute>:
+    orientation: "horizontal"
+    size_hint_y: 0.3
+    value: 0
+
+    Label:
+        size_hint_x: 1.5
+        text: root.attribute
+    CheckBox:
+        allow_no_selection: False
+        group: root.attribute
+        on_active: self.value = -2.0
+    CheckBox:
+        allow_no_selection: False
+        group: root.attribute
+        on_active: self.value = -1.0
+    CheckBox:
+        allow_no_selection: False
+        group: root.attribute
+        on_active: self.value = 0.0
+    CheckBox:
+        allow_no_selection: False
+        group: root.attribute
+        on_active: self.value = 1.0
+    CheckBox:
+        allow_no_selection: False
+        group: root.attribute
+        on_active: self.value = 2.0
+    CheckBox:
+        allow_no_selection: False
+        group: root.attribute
+        on_active: self.value = 0.0
+        active: True
+
+<Desk>:
+    size_hint: None, None
+    do_scale: False
+    size: desk_image.size
+
+    Image:
+        id: desk_image
+        source: 'images/desk.png'
+
+<Student>:
+    color: [0, 0, 0, 1]

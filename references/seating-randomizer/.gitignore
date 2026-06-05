@@ -1,0 +1,17 @@
+# General
+.DS_Store
+
+# dependencies
+node_modules/
+
+# logs
+npm-debug.log*
+
+# output from webpack
+dist/
+
+# jest coverage
+coverage/
+
+# env
+.env

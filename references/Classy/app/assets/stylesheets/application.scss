@@ -1,0 +1,347 @@
+/*
+ * This is a manifest file that'll be compiled into application.css, which will include all the files
+ * listed below.
+ *
+ * Any CSS and SCSS file within this directory, lib/assets/stylesheets, vendor/assets/stylesheets,
+ * or any plugin's vendor/assets/stylesheets directory can be referenced here using a relative path.
+ *
+ * You're free to add application-wide styles to this file and they'll appear at the bottom of the
+ * compiled file so the styles you add here take precedence over styles defined in any styles
+ * defined in the other CSS/SCSS files in this directory. It is generally better to create a new
+ * file per style scope.
+ *
+ *= require_tree .
+ *= require_self
+ *= require jquery-ui
+ */
+
+ @import 'bootstrap-sprockets';
+ @import "bootswatch/cyborg/variables";
+ @import 'bootstrap';
+ @import "bootswatch/cyborg/bootswatch";
+
+ .glyphicon.glyphicon-user.highlight {
+   transition: box-shadow 400ms;
+   box-shadow: 0 0 0 10px rgba(0, 0, 0, 0.5);
+ }
+
+ .glyphicon.glyphicon-user {
+   transition: box-shadow 400ms ;
+   box-shadow: 0 0 0 0;
+ }
+
+ .small-logo {
+  width: 200px;
+ }
+
+ .progress-bar-label{
+    color: white;
+    position: absolute;
+    right: 25px;
+ }
+
+ .create-classroom-modal{
+    float: left;
+    margin-left: 42px;
+ }
+
+ table.large-classroom-grid{
+  border: 0 !important;
+ }
+
+ .table > tbody > tr > td.classroom-square-no-border{
+    position: relative;
+    height:60px;
+    width:75px;
+    border: 0;
+ }
+
+  .classroom-square {
+    /*padding: 2px;*/
+    position: relative;
+    height:60px;
+    width:75px;
+ }
+
+
+ .glyphicon{
+  top: 2px;
+ }
+ .destroy-section{
+  display: none;
+ }
+
+.m-content {
+  z-index: 2;
+  position: fixed;
+  top: 20%;
+  left: 20%;
+  background-color:#060606;
+  padding: 1pc;
+  border: 1px solid;
+  border-radius: 5px;
+}
+
+
+.m-background {
+  background: rgba(92, 88, 88, 0.6);
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+}
+.table-sorter-icon{
+  float: right;
+}
+
+.gender-M {
+  background-color: rgb(38,147,198);
+  border-radius:5px;
+  width: 100%;
+  height: 100%
+}
+
+.gender-F {
+  color: black;
+  background-color: rgb(190,226,242);
+  border-radius:5px;
+  width: 100%;
+  height: 100%
+}
+
+.student-icon-draggable.highlighted-student-icon.level1 {
+  background-color: #9933cc;
+  border-radius: 5px;
+}
+.student-icon-draggable.highlighted-student-icon.level2 {
+  background-color: #9933cc;
+  border-radius: 5px;
+}
+.student-icon-draggable.highlighted-student-icon.level3 {
+  background-color: #9933cc;
+  border-radius: 5px;
+}
+.student-icon-draggable.highlighted-student-icon.level4 {
+  background-color: #9933cc;
+  border-radius: 5px;
+}
+.student-icon-draggable.highlighted-student-icon.level5 {
+  background-color: #9933cc;
+  border-radius: 5px;
+}
+
+div.ui-draggable.student-icon-draggable:not(.student-icon-dragged){
+  height: 100%;
+  overflow: hidden;
+}
+.seating-chart-index-item-panel-header:hover, .classroom-index-item-panel-header:hover{
+  text-decoration: none;
+}
+
+.student-icon-draggable.ui-draggable-handle:not(.student-icon-dragged){
+  color: #9933CC;
+  font-weight: bold;
+}
+
+.form-group.new-seating-chart-form-group{
+  margin: 0;
+}
+
+.student-icon-draggable.level1 {
+    background-color: rgb(10,37,50);
+    border-radius:5px;
+    width: 100%;
+    height: 100%
+}
+.student-icon-draggable.level2 {
+    background-color: rgb(42,159,214);
+    border-radius:5px;
+    width: 100%;
+    height: 100%;
+}
+
+.student-icon-draggable.level3 {
+    background-color: rgb(38,147,198);
+    border-radius:5px;
+    width: 100%;
+    height: 100%
+}
+
+.student-icon-draggable.level4 {
+    color:black;
+    background-color: rgb(91,181,223);
+    border-radius:5px;
+    width: 100%;
+    height: 100%
+}
+.student-icon-draggable.level5 {
+    color: black;
+    background-color: rgb(190,226,242);
+    border-radius:5px;
+    width: 100%;
+    height: 100%
+}
+
+.splash-grid {
+  table-layout: fixed;
+}
+
+.splash-grid-row {
+  width: 100%;
+  height: 100px;
+}
+
+.splash-grid-cell, .splash-grid-2-cell {
+  text-align: center;
+  padding: 20px;
+  border-radius: 10px;
+}
+
+ .classroom-row-modal {
+    height:15px;
+    width:15px;
+ }
+
+ .classroom-square-modal {
+    height:15px;
+    width:15px;
+ }
+
+ .classroom-square-modal.active {
+    background-color: #1b1b1b;
+ }
+
+ #root {
+  margin: 10px;
+ }
+
+ .added-student-item {
+  margin: 5px;
+ }
+
+  .student-icon-assigned {
+    color: white;
+  }
+
+  .student-icon-dragging {
+    border-radius: 5px;
+    text-align: center;
+  }
+
+  .student-icon-draggable{
+    color: white;
+    padding: 3px;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    position: absolute;
+    text-align: center;
+    overflow: hidden;         
+    text-overflow: ellipsis;
+  }
+
+  .desk-small {
+    border-radius: 3px;
+  }
+
+  .temp-desk{
+    border-radius: 8px;
+  }
+
+  .desk {
+    border-radius: 8px;
+  }
+
+  .desk-label-stationary {
+    position: absolute;
+    text-align: center;
+    width: 45px;
+    overflow: hidden;         
+    text-overflow: ellipsis;
+    margin: 0 auto;
+    padding: 0px;
+  }
+
+  .desk-label {
+    text-align: center;
+    width: 100%;
+    overflow: hidden;         
+    text-overflow: ellipsis;
+    margin: 3px auto;
+    padding: 0px;
+  }
+
+  .student-draggable-container {
+    width: 50px;
+  }
+
+ .classroom-row {
+    height:60px;
+    width:60px;
+ }
+ .student-icon-draggable-start{
+  padding: 0px 0px, 0px 0px;
+  position: relative;
+ }
+
+
+ .student-selected {
+    background-color: blue;
+ }
+ .occupied {
+    background-color: black;
+    border-color: gray;
+    border-radius: 5px;
+    color: white;
+ }
+ 
+ .seating-chart-index-item-button {
+    margin: 10px;
+  }
+
+ .classroom-index-item-button {
+   margin: 10px;
+   width: 50px;
+ }
+
+.classroom-grid-small {
+    margin: 10px auto;
+ }
+
+ .create-seating-chart-button{
+    width: 50px;
+    margin: 5px;
+ }
+
+ .panel-heading.new-seating-chart-panel-header, .panel-heading.new-classroom-panel-header {
+  background-color: #181818;
+  border: none;
+ }
+
+ .panel.new-seating-chart-panel, .panel.new-classroom-panel {
+    border-style: dashed;
+    border-color: #222222;
+    border-width: thin;
+    background-color: transparent;
+ }
+
+
+ .panel-heading.new-seating-chart-panel-header {
+  background-color: #181818;
+  border: none;
+ }
+
+ .panel.new-seating-chart-panel {
+    border-style: dashed;
+    border-color: #222222;
+    border-width: thin;
+    background-color: transparent;
+ }
+
+ .seating-chart-index-button{
+    width: 50px;
+    margin: 5px;
+ }

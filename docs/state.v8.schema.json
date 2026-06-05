@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SeatingChartApp State v8",
+  "type": "object",
+  "properties": {
+    "version": { "type": "integer", "minimum": 8 },
+    "save_dpi": { "type": "integer" },
+    "mode": { "type": "string", "enum": ["Seats", "Layout"] },
+    "selected_layout_item": { "type": "integer" },
+    "room_w": { "type": "integer" },
+    "room_h": { "type": "integer" },
+    "front_edge": { "type": "string" },
+    "auto_assign_limit": { "type": "integer" },
+    "roster": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "students": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "color": { "type": "integer" },
+          "notes": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "forbidden": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "restrictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "first": { "type": "string" },
+          "second": { "type": "string" },
+          "radius": { "type": "integer" }
+        },
+        "required": ["first", "second"]
+      }
+    },
+    "affinities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "first": { "type": "string" },
+          "second": { "type": "string" },
+          "weight": { "type": "integer" }
+        },
+        "required": ["first", "second"]
+      }
+    },
+    "must_together": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "first": { "type": "string" },
+          "second": { "type": "string" }
+        },
+        "required": ["first", "second"]
+      }
+    },
+    "group_affinities": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "layout_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "label": { "type": "string" },
+          "rotation": { "type": "integer" },
+          "locked": { "type": "boolean" },
+          "flipped": { "type": "boolean" },
+          "capacity": { "type": "integer" },
+          "visible": { "type": "boolean" },
+          "bounds": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "occupants": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["type", "bounds"]
+      }
+    }
+  },
+  "required": ["version", "mode", "roster", "restrictions", "layout_items"]
+}

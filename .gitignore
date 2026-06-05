@@ -1,0 +1,81 @@
+# Seating Chart App - .gitignore
+
+# Build outputs (CMake multi-config, MSVC, MinGW, test builds)
+build/
+build-*/
+build_*/
+out/
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.obj
+*.o
+*.a
+*.so
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+CMakeUserPresets.json
+install_manifest.txt
+CPackConfig.cmake
+CPackSourceConfig.cmake
+
+# Test / temp artifacts
+testout.txt
+*.tmp
+*.log
+*.tlog
+
+# Visual Studio / IDE
+.vs/
+.vscode/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+*.sln.docstates
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+
+# macOS / Linux (in case)
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+*.swo
+*~
+
+# Local app data / autosaves (user state is in %APPDATA%\SeatingChartApp\)
+*.bak
+state.json
+state.txt
+
+# AI / session artifacts (Claude/Grok local state)
+.claude/
+claude recommendations.txt
+
+# References are vendored as read-only source snapshots for development.
+# Their original .git directories are excluded so this repo does not
+# accidentally nest full git histories (saves space + avoids submodule
+# complexity). See references/README.md for original URLs.
+# If you want to update a reference later, re-clone it from the original GitHub URL.
+references/*/.git
+references/*/.git.bak
+
+# Optional: large media or user exports if added later
+# *.bmp
+# *.png
+# *.csv

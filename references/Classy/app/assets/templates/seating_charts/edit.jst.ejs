@@ -1,0 +1,81 @@
+<div class="container" >
+</div>
+<div class="container" >
+	<div class="row">
+		<div class='col-xs-3'>
+			<div class="row">
+				<h3> <%= seatingChart.escape("name") %> </h3>
+			</div>
+			<div class="row">
+				<p class="lead">
+					<a href="#sections/<%=section.id%>"> <%= section.escape("name") %> </a>
+					//
+					<a href="#classrooms/<%=classroom.id %>/edit"> <%= classroom.escape("name") %></a>
+				</p>
+			</div>
+		</div>
+		<div class='col-xs-8'>
+				<div id="alerts">
+				</div>
+		</div>
+	</div>
+	<div class="row">
+		<div class="col-xs-3" id="students-index">
+			<table class="table
+									  table-hover
+									  table-condensed
+									  connectedSortable">
+				<thead>
+			    <tr>
+			    	<th> </th>
+			      <th>Name</th>
+			      <th>Math</th>
+			      <th>Reading</th>
+			    </tr>
+		  	</thead>
+				  <tbody id="students-table">
+				  	<div >
+				  	</div>
+				  </tbody>
+			</table>
+			
+		</div>
+		<div class="col-xs-8">
+			<div class="col col-xs-12" id="progress-bar">
+			</div>
+			<table class="table
+									  large-classroom-grid
+									  connectedSortable" id="classroom-grid" > </table>
+			<div class="col-xs-12">
+				<button class='btn btn-primary show-reading-level-button'> Show Reading Level </button>
+				<button class='btn btn-primary show-math-level-button'> Show Math Level </button>
+				<button class='btn btn-primary show-gender-button'> Show Gender </button>
+				<button class='btn btn-info remove-level-button'> Clear </button>
+			</div>
+			<div class="col-xs-12">
+				<br>
+	
+				<br>
+			</div>
+		</div>
+		<div class="col-xs-1">
+			<button class='btn btn-lg btn-success save-chart-button'> Save </button>
+		</div>
+		<div class="col-xs-1">
+			<br>
+			<button class='btn btn-lg btn-danger delete-chart-button'> Delete </button>
+		</div>
+		<div class="col-xs-1">
+			<br>
+			<button class='btn btn-lg btn-info shuffle-students-button'> Shuffle! </button>
+		</div>
+		<div class="col-xs-1">
+			<br>
+			<button class='btn btn-lg btn-warning start-over-button'> Start Over </button>
+		</div>
+		<div class="col-xs-1">
+			<br>
+			<a class='btn btn-lg btn-default edit-classroom' href="#classrooms/<%=classroom.id%>/edit"> Edit Desks </a>
+		</div>
+	</div>
+</div>

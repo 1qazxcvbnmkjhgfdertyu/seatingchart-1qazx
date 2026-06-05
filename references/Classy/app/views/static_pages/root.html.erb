@@ -1,0 +1,59 @@
+<nav class="navbar navbar-inverse">
+  <div class="container-fluid">
+    <div class="navbar-header">
+      <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#bs-example-navbar-collapse-2">
+        <span class="sr-only">Toggle navigation</span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+      </button>
+      <a class="navbar-brand" href="/">
+        Classy
+      </a>
+    </div>
+    <div class="collapse navbar-collapse" id="bs-example-navbar-collapse-2">
+      <ul class="nav navbar-nav">
+        <li class="dropdown">
+          <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false">Sections <span class="caret"></span></a>
+          <ul class="dropdown-menu" role="menu">
+            <li><a href="#">View All</a></li>
+            <li class="divider"></li>
+            <li><a href="#section/new">New</a></li>
+          </ul>
+        </li>
+        <li class="dropdown">
+          <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false">Classrooms <span class="caret"></span></a>
+          <ul class="dropdown-menu" role="menu">
+            <li><a href="#/classrooms">View All</a></li>
+            <li class="divider"></li>
+            <li><a href="#classrooms/new">New</a></li>
+          </ul>
+        </li>
+        <li class="dropdown">
+          <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false">Students <span class="caret"></span></a>
+          <ul class="dropdown-menu" role="menu">
+            <li><a href="#/students">View All</a></li>
+            <li class="divider"></li>
+            <li><a href="#/students/new">New</a></li>
+          </ul>
+        </li>
+      </ul>
+      <ul class="nav navbar-nav navbar-right">
+        <li> 
+          <%= link_to "Logout", session_url, method: :delete %>
+        </li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+
+<div id="root" ></div>
+<script>
+  $(function(){
+    SeatingApp.CURRENT_USER_ID = <%=current_user.id %>
+    SeatingApp.initialize();
+
+  })
+</script>
+
