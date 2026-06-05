@@ -17,6 +17,7 @@ constexpr int kQuickFillSeatsId       = 1012;
 constexpr int kAssignSelectedRosterId = 1013;
 constexpr int kBulkTagId              = 1016; // bulk tag for selected in roster
 constexpr int kRosterFilterId         = 1014; // for search/filter roster list
+constexpr int kShowLastNamesId        = 1017;
 constexpr int kSeatModeId             = 2001;
 constexpr int kLayoutModeId           = 2002;
 constexpr int kCaptureChartId         = 2003;
@@ -78,6 +79,43 @@ constexpr int kApplyRoomSizeId        = 3223;
 constexpr int kFrontEdgeId            = 3224;
 constexpr int kShowAlignmentToolsId   = 5001;
 constexpr int kShowObjectInspectorId  = 5002;
+constexpr int kTabControlId           = 5100;
+
+// Roster tab — two-column student table
+constexpr int kRosterViewId           = 6001;
+constexpr int kAddStudentId           = 6002;
+constexpr int kRemoveStudentId        = 6003;
+
+// Rules tab — structured sections
+constexpr int kKeepApartListId        = 6010;
+constexpr int kAddKeepApartId         = 6011;
+constexpr int kRemKeepApartId         = 6012;
+constexpr int kKeepTogetherListId     = 6013;
+constexpr int kAddKeepTogetherId      = 6014;
+constexpr int kRemKeepTogetherId      = 6015;
+constexpr int kDeskTagListId          = 6016;
+constexpr int kAddDeskTagRuleId       = 6017;
+constexpr int kRemDeskTagRuleId       = 6018;
+
+// Groups tab (index 3)
+constexpr int kGroupSizeEditId        = 6020;
+constexpr int kGroupSizeSpinId        = 6021;
+constexpr int kGroupConfigListId      = 6022;
+constexpr int kShuffleGroupsId        = 6023;
+constexpr int kGroupsOutputListId     = 6024;
+constexpr int kGroupRulesApplyId      = 6025;
+constexpr int kGroupResetId           = 6026;
+constexpr int kGroupRulesEditId       = 6027;
+constexpr int kGroupSizeComboId       = 6028; // "Groups of:" dropdown
+
+// Inline roster edit bar (Roster tab)
+constexpr int kInlineFirstEditId      = 6035;
+constexpr int kInlineLastEditId       = 6036;
+constexpr int kSaveStudentEditId      = 6037;
+
+// Class strip (main window, not sidebar)
+constexpr int kClassStripId           = 6100;
+constexpr int kAddClassBtnId          = 6101;
 
 // Spinner (updown) controls for the Object Inspector
 constexpr int kLayoutXSpinId          = 3240;
@@ -89,7 +127,8 @@ constexpr int kLayoutHSpinId          = 3243;
 // All UI control handles (plain data struct)
 // ---------------------------------------------------------------------------
 struct ControlHandles {
-    HWND sidebar = nullptr;
+    HWND sidebar    = nullptr;
+    HWND tabControl = nullptr; // Roster | Rules | Arrange tab strip
 
     // Header / status (always visible, not scrolled)
     HWND titleLabel = nullptr, summaryLabel = nullptr, statusLabel = nullptr;
@@ -140,6 +179,42 @@ struct ControlHandles {
     HWND layoutXSpin = nullptr, layoutYSpin = nullptr;
     HWND layoutWSpin = nullptr, layoutHSpin = nullptr;
 
+    // Roster tab — two-column ListView
+    HWND rosterView       = nullptr;
+    HWND addStudentBtn    = nullptr;
+    HWND removeStudentBtn = nullptr;
+    HWND showLastNamesBtn = nullptr;
+
+    // Inline roster edit bar
+    HWND inlineFirstEdit  = nullptr;
+    HWND inlineLastEdit   = nullptr;
+    HWND saveStudentEdit  = nullptr;
+
+    // Rules tab — structured sections
+    HWND keepApartHeader  = nullptr, keepApartDesc     = nullptr;
+    HWND keepApartList    = nullptr;
+    HWND addKeepApartBtn  = nullptr, remKeepApartBtn   = nullptr;
+    HWND keepTogetherHeader = nullptr, keepTogetherDesc = nullptr;
+    HWND keepTogetherList = nullptr;
+    HWND addKeepTogetherBtn = nullptr, remKeepTogetherBtn = nullptr;
+    HWND deskTagHeader    = nullptr, deskTagDesc        = nullptr;
+    HWND deskTagList      = nullptr;
+    HWND addDeskTagRuleBtn = nullptr, remDeskTagRuleBtn = nullptr;
+
+    // Groups tab (index 3)
+    HWND groupSizeLabel   = nullptr;
+    HWND groupSizeEdit    = nullptr, groupSizeSpin    = nullptr; // legacy, kept hidden
+    HWND groupSizeCombo   = nullptr;   // new "Groups of:" dropdown
+    HWND groupOrLabel     = nullptr;   // "or" static text
+    HWND groupOrValLabel  = nullptr;   // e.g. "3" (computed overflow size)
+    HWND groupConfigList  = nullptr;   // legacy list kept hidden
+    HWND shuffleGroupsBtn = nullptr;
+    HWND groupsOutputList = nullptr;
+    HWND groupRulesLabel  = nullptr;
+    HWND groupRulesEdit   = nullptr;
+    HWND groupRulesApply  = nullptr;
+    HWND groupResetBtn    = nullptr;
+
     // Layout mode — room size
     HWND roomSizeLabel = nullptr;
     HWND roomWidthLabel = nullptr, roomWidthEdit = nullptr;
@@ -161,8 +236,11 @@ void ApplyFontsToControls(const ControlHandles& c, const Renderer& r);
 // Sync helpers (called by SeatingChartApp after state changes)
 void SyncRosterEditFromRoster(const AppState& state, const ControlHandles& c);
 void SyncRestrictionEditFromRules(const AppState& state, const ControlHandles& c);
+void SyncGroupRulesEditFromState(const AppState& state, const ControlHandles& c);
 void RefreshRosterList(const AppState& state, const ControlHandles& c);
 void SyncLayoutInspectorWithSelection(const AppState& state, const ControlHandles& c);
+void SyncRosterView(const AppState& state, const ControlHandles& c);
+void SyncRulesLists(const AppState& state, const ControlHandles& c);
 void UpdateSidebarText(const AppState& state, const ControlHandles& c);
 void UpdateButtonState(const AppState& state, const ControlHandles& c,
                        bool autoAssignRunning);

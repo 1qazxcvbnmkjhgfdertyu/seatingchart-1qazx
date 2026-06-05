@@ -8,6 +8,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -128,6 +129,20 @@ struct WindowUiMetrics {
         compact += c;
     }
     return compact;
+}
+
+[[nodiscard]] inline std::pair<std::wstring, std::wstring> SplitDisplayName(std::wstring_view sv) {
+    auto value = TrimCopy(sv);
+    if (value.empty()) return { {}, {} };
+    const size_t pos = value.find(L' ');
+    if (pos == std::wstring::npos) return { std::move(value), {} };
+    return { std::wstring(value.substr(0, pos)), std::wstring(value.substr(pos + 1)) };
+}
+
+[[nodiscard]] inline std::wstring DisplayStudentName(std::wstring_view sv, bool showLastNames) {
+    auto value = TrimCopy(sv);
+    if (showLastNames) return value;
+    return SplitDisplayName(value).first;
 }
 
 [[nodiscard]] inline std::vector<std::wstring> SplitRosterInput(std::wstring_view text,

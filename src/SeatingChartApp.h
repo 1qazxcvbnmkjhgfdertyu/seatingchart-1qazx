@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <windows.h>
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,10 @@ public:
 
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT HandleSidebarMessage(HWND sidebar, UINT msg, WPARAM wParam, LPARAM lParam);
+    // Called from subclass procs (must be public)
+    void CommitInlineCellEdit(bool advance = false);
+    void CancelInlineCellEdit();
+    bool IsAddingNewStudent() const { return cellEdit_.isNew; }
 
     static SeatingChartApp* FromHwnd(HWND hwnd) {
         return reinterpret_cast<SeatingChartApp*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -113,6 +118,30 @@ private:
     bool     draggingFront_          = false;
     RoomEdge frontDragOriginalEdge_  = RoomEdge::Top;
 
+    // --- Multi-class management ---
+    struct ClassInfo { std::wstring name; std::wstring file; };
+    std::vector<ClassInfo> classList_;
+    int  activeClassIdx_ = 0;
+    HWND classListBox_   = nullptr;
+    HWND addClassBtn_    = nullptr;
+    static constexpr int kClassStripW = 44; // logical units
+
+    // --- Groups (transient, not saved) ---
+    std::vector<std::vector<std::wstring>> generatedGroups_;
+    int groupSizePref_ = 2;
+    std::unordered_map<std::wstring, int> groupPairHistory_;
+
+    // --- Inline cell editing (floating overlay EDIT on rosterView) ---
+    struct CellEdit {
+        HWND  wnd        = nullptr; // the floating EDIT control (child of sidebar)
+        int   item       = -1;      // roster row index (or == roster.size() when adding)
+        int   subItem    = -1;      // 1 = First Name col, 2 = Last Name col
+        bool  isNew      = false;   // true while adding a brand-new row
+        std::wstring pendingFirst;  // first name already typed (isNew + subItem==2 only)
+    };
+    CellEdit cellEdit_;
+    void BeginInlineCellEdit(int item, int subItem);   // create floating edit
+
     // --- Roster drag assignment ---
     bool rosterDragPrimed_ = false;
     bool rosterDragging_ = false;
@@ -129,7 +158,7 @@ private:
     LRESULT OnLButtonDblClk(POINT pt);
     LRESULT OnMouseMove(POINT pt, WPARAM buttons);
     LRESULT OnMouseLeave();
-    LRESULT OnContextMenu(POINT screenPt);   // right-click layout context menu
+    LRESULT OnContextMenu(HWND source, POINT screenPt);   // right-click layout context menu
     LRESULT OnSetCursor(LPARAM lParam);
     LRESULT OnPaint();
     LRESULT OnDestroy();
@@ -152,6 +181,34 @@ private:
     [[nodiscard]] RoomEdge NearestRoomEdge(POINT clientPt) const;
     void                   CommitFrontEdge(RoomEdge edge);
     void PromptAndApplyRoomSize();
+
+    // --- Class management ---
+    void InitClassList();
+    void SaveClassList();
+    void SwitchToClass(int idx);
+    void NewClass();
+    void RenameClass(int idx, const std::wstring& name);
+    void SyncClassListBox();
+    [[nodiscard]] std::wstring GetClassFilePath(int idx) const;
+
+    // --- Roster / rules dialogs ---
+    bool PromptStudentName(const std::wstring& title,
+                           std::wstring& first, std::wstring& last);
+    bool PromptRulePair(const std::wstring& title,
+                        std::wstring& nameA, std::wstring& nameB);
+    bool PromptRulePairDropdown(const std::wstring& title,
+                                std::wstring& nameA, std::wstring& nameB);
+    bool PromptSingleText(const std::wstring& title,
+                          const std::wstring& label,
+                          std::wstring& value);
+    void ToggleShowLastNames();
+
+    // --- Groups ---
+    void RefreshGroupConfigList();
+    void RefreshGroupCombo();
+    void ShuffleGroups();
+    void SyncGroupsOutput();
+    void ResetGroupShuffleMemory();
     bool HitSidebarSplitter(POINT pt) const;
     void ResizeSidebarLive(POINT pt);
     void QuickFillSeats();
@@ -171,9 +228,11 @@ private:
                            std::vector<Restriction> affinities = {},
                            std::vector<Restriction> mustTogether = {},
                            std::vector<std::vector<std::wstring>> groups = {});
+    void ApplyGroupRules(std::vector<std::vector<std::wstring>> groups);
     bool LoadRosterFromFile(const std::wstring& path);
     bool PromptAndLoadRosterFile();
     void AssignRosterSelectionToSeat();
+    void DeleteSelectedRosterStudents(); // right-click "Delete" on roster
     void BulkTagSelectedRoster(); // bulk apply tag to selected in roster list
     bool BeginRosterDragFromList(POINT listClientPt);
     void UpdateRosterDrag(POINT screenPt);
@@ -196,6 +255,8 @@ private:
     // --- Hover (layout hit testing lives in SelectionManager) ---
     void UpdateHover(POINT screenPt);
     void EndRubberBand(POINT endPt);     // finalize a rubber-band drag
+
+    void ApplyThemeToListViews(); // sync bg/text/selection colours after theme change
 
     // --- UI refresh ---
     void RecalculateLayout();

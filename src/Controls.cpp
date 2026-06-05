@@ -85,12 +85,12 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
     c.modeLabel    = MakeLabel(p, L"");
     c.layoutMode   = MakeRadio(p, L"Arrange", kLayoutModeId, WS_GROUP);
     c.seatMode     = MakeRadio(p, L"Assign",  kSeatModeId);
-    c.captureChart = MakeButton(p, L"Capture", kCaptureChartId);
-    c.exportChart  = MakeButton(p, L"Export",  kExportChartId);
-    c.printChart   = MakeButton(p, L"Print",   kPrintChartId);
-    c.exportCsv    = MakeButton(p, L"Export CSV", kExportCsvId);
-    c.seatingReport = MakeButton(p, L"Report", kSeatingReportId);
-    c.exportHtml   = MakeButton(p, L"Export HTML", kExportHtmlId);
+    c.captureChart  = MakeButton(p, L"Copy",    kCaptureChartId);
+    c.exportChart   = MakeButton(p, L"PNG",     kExportChartId);
+    c.printChart    = MakeButton(p, L"Print",   kPrintChartId);
+    c.exportCsv     = MakeButton(p, L"CSV",     kExportCsvId);
+    c.seatingReport = MakeButton(p, L"Report",  kSeatingReportId);
+    c.exportHtml    = MakeButton(p, L"HTML",    kExportHtmlId);
 
     c.rosterLabel     = MakeLabel(p, L"Roster input");
     c.rosterEdit      = MakeEdit(p, kRosterEditId, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
@@ -115,8 +115,8 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
     c.restrictionLabel = MakeLabel(p, L"Rules: A|B apart, A+B near @W weight, A==B together, Group: names (clusters)");
     c.restrictionEdit  = MakeEdit(p, kRestrictionEditId, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
     c.applyRules       = MakeButton(p, L"Apply Rules", kApplyRulesId);
-    c.saveTemplateBtn   = MakeButton(p, L"Save Template…", kSaveTemplateId);
-    c.loadTemplateBtn   = MakeButton(p, L"Load Template…", kLoadTemplateId);
+    c.saveTemplateBtn   = MakeButton(p, L"Save Tmpl", kSaveTemplateId);
+    c.loadTemplateBtn   = MakeButton(p, L"Load Tmpl", kLoadTemplateId);
 
     // Layout mode — add items
     c.layoutToolsLabel    = MakeLabel(p, L"Furniture");
@@ -198,6 +198,165 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
     c.frontEdgeLabel  = MakeLabel(p, L"Front of room (click to change)");
     c.frontEdgeButton = MakeButton(p, L"Front: Top", kFrontEdgeId);
 
+    // --- Roster tab: two-column ListView ---
+    c.rosterView = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEW, nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS |
+        LVS_REPORT | LVS_SHOWSELALWAYS,   // no LVS_SINGLESEL — shift/ctrl-click works
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kRosterViewId)),
+        GetModuleHandleW(nullptr), nullptr);
+    if (c.rosterView) {
+        ListView_SetExtendedListViewStyle(c.rosterView,
+            LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+        LVCOLUMNW lvc{};
+        lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+        lvc.fmt  = LVCFMT_LEFT;   // explicit left-align for # and all columns
+        lvc.iSubItem = 0; lvc.cx = Scale(28);
+        lvc.pszText = const_cast<wchar_t*>(L"#");
+        ListView_InsertColumn(c.rosterView, 0, &lvc);
+        lvc.iSubItem = 1; lvc.cx = Scale(100);
+        lvc.pszText = const_cast<wchar_t*>(L"First Name");
+        ListView_InsertColumn(c.rosterView, 1, &lvc);
+        lvc.iSubItem = 2; lvc.cx = Scale(100);
+        lvc.pszText = const_cast<wchar_t*>(L"Last Name");
+        ListView_InsertColumn(c.rosterView, 2, &lvc);
+    }
+    c.addStudentBtn    = MakeButton(p, L"+ Add",    kAddStudentId);
+    c.removeStudentBtn = MakeButton(p, L"Remove",    kRemoveStudentId);
+    c.showLastNamesBtn = MakeButton(p, L"Show Last Names", kShowLastNamesId, BS_AUTOCHECKBOX | BS_PUSHLIKE);
+    // Inline add/edit bar — always visible, no popup dialog needed
+    c.inlineFirstEdit = MakeEdit(p, kInlineFirstEditId, ES_AUTOHSCROLL);
+    SendMessageW(c.inlineFirstEdit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"First name…"));
+    c.inlineLastEdit  = MakeEdit(p, kInlineLastEditId,  ES_AUTOHSCROLL);
+    SendMessageW(c.inlineLastEdit,  EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Last name…"));
+    c.saveStudentEdit = MakeButton(p, L"Save", kSaveStudentEditId);
+
+    // --- Rules tab: structured sections ---
+    c.keepApartHeader    = MakeLabel(p, L"Keep Apart Rules");
+    c.keepApartDesc      = MakeLabel(p, L"Keep students away from each other.");
+    c.keepApartList      = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEW, nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kKeepApartListId)),
+        GetModuleHandleW(nullptr), nullptr);
+    if (c.keepApartList) {
+        LVCOLUMNW lvc{};
+        lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+        lvc.iSubItem = 0; lvc.cx = Scale(110);
+        lvc.pszText = const_cast<wchar_t*>(L"Student A");
+        ListView_InsertColumn(c.keepApartList, 0, &lvc);
+        lvc.iSubItem = 1; lvc.cx = Scale(110);
+        lvc.pszText = const_cast<wchar_t*>(L"Student B");
+        ListView_InsertColumn(c.keepApartList, 1, &lvc);
+        // Fixed columns — prevent user from dragging column dividers
+        if (HWND hdr = ListView_GetHeader(c.keepApartList)) {
+            SetWindowLongW(hdr, GWL_STYLE,
+                GetWindowLongW(hdr, GWL_STYLE) | HDS_NOSIZING);
+        }
+    }
+    c.addKeepApartBtn    = MakeButton(p, L"+ Add",  kAddKeepApartId);
+    c.remKeepApartBtn    = MakeButton(p, L"Remove",      kRemKeepApartId);
+
+    c.keepTogetherHeader = MakeLabel(p, L"Keep Together Rules");
+    c.keepTogetherDesc   = MakeLabel(p, L"Keep groups of students near each other.");
+    c.keepTogetherList   = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEW, nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kKeepTogetherListId)),
+        GetModuleHandleW(nullptr), nullptr);
+    if (c.keepTogetherList) {
+        LVCOLUMNW lvc{};
+        lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+        lvc.iSubItem = 0; lvc.cx = Scale(110);
+        lvc.pszText = const_cast<wchar_t*>(L"Student A");
+        ListView_InsertColumn(c.keepTogetherList, 0, &lvc);
+        lvc.iSubItem = 1; lvc.cx = Scale(110);
+        lvc.pszText = const_cast<wchar_t*>(L"Student B");
+        ListView_InsertColumn(c.keepTogetherList, 1, &lvc);
+        if (HWND hdr = ListView_GetHeader(c.keepTogetherList)) {
+            SetWindowLongW(hdr, GWL_STYLE,
+                GetWindowLongW(hdr, GWL_STYLE) | HDS_NOSIZING);
+        }
+    }
+    c.addKeepTogetherBtn = MakeButton(p, L"+ Add",  kAddKeepTogetherId);
+    c.remKeepTogetherBtn = MakeButton(p, L"Remove",      kRemKeepTogetherId);
+
+    c.deskTagHeader = MakeLabel(p, L"Desk Tag Rules");
+    c.deskTagDesc   = MakeLabel(p,
+        L"Restrict students on the seating chart to desks with a certain tag.");
+    c.deskTagList    = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEW, nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kDeskTagListId)),
+        GetModuleHandleW(nullptr), nullptr);
+    if (c.deskTagList) {
+        LVCOLUMNW lvc{};
+        lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+        lvc.iSubItem = 0; lvc.cx = Scale(110);
+        lvc.pszText = const_cast<wchar_t*>(L"Student");
+        ListView_InsertColumn(c.deskTagList, 0, &lvc);
+        lvc.iSubItem = 1; lvc.cx = Scale(110);
+        lvc.pszText = const_cast<wchar_t*>(L"Tag");
+        ListView_InsertColumn(c.deskTagList, 1, &lvc);
+        if (HWND hdr = ListView_GetHeader(c.deskTagList)) {
+            SetWindowLongW(hdr, GWL_STYLE,
+                GetWindowLongW(hdr, GWL_STYLE) | HDS_NOSIZING);
+        }
+    }
+    c.addDeskTagRuleBtn = MakeButton(p, L"+ Tag Rule", kAddDeskTagRuleId);
+    c.remDeskTagRuleBtn = MakeButton(p, L"Remove",     kRemDeskTagRuleId);
+
+    // --- Groups tab (index 3) ---
+    c.groupSizeLabel = MakeLabel(p, L"Groups of:");
+    // Combobox for selecting base group size (valid options computed from roster)
+    c.groupSizeCombo = CreateWindowExW(0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kGroupSizeComboId)),
+        GetModuleHandleW(nullptr), nullptr);
+    c.groupOrLabel    = MakeLabel(p, L"or");
+    c.groupOrValLabel = MakeLabel(p, L"—");
+    c.groupSizeEdit  = MakeEdit(p, kGroupSizeEditId, ES_NUMBER | ES_CENTER);
+    SetWindowTextW(c.groupSizeEdit, L"3");
+    c.groupSizeSpin  = CreateWindowExW(0, UPDOWN_CLASS, nullptr,
+        WS_CHILD | UDS_ARROWKEYS | UDS_NOTHOUSANDS,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kGroupSizeSpinId)),
+        GetModuleHandleW(nullptr), nullptr);
+    c.groupConfigList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_VSCROLL |
+        LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kGroupConfigListId)),
+        GetModuleHandleW(nullptr), nullptr);
+    c.shuffleGroupsBtn = MakeButton(p, L"Shuffle Groups", kShuffleGroupsId);
+    c.groupsOutputList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_VSCROLL |
+        LBS_NOINTEGRALHEIGHT,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kGroupsOutputListId)),
+        GetModuleHandleW(nullptr), nullptr);
+    c.groupRulesLabel = MakeLabel(p, L"Group Rules");
+    c.groupRulesEdit  = MakeEdit(p, kGroupRulesEditId, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
+    c.groupRulesApply = MakeButton(p, L"Apply Group Rules", kGroupRulesApplyId);
+    c.groupResetBtn   = MakeButton(p, L"Reset Shuffle Memory", kGroupResetId);
+
+    // Tab control — Roster | Rules | Arrange | Groups
+    c.tabControl = CreateWindowExW(0, WC_TABCONTROL, nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_HOTTRACK,
+        0, 0, 0, 0, p,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kTabControlId)),
+        GetModuleHandleW(nullptr), nullptr);
+    if (c.tabControl) {
+        TCITEMW ti{};
+        ti.mask = TCIF_TEXT;
+        ti.pszText = const_cast<wchar_t*>(L"Roster");  TabCtrl_InsertItem(c.tabControl, 0, &ti);
+        ti.pszText = const_cast<wchar_t*>(L"Rules");   TabCtrl_InsertItem(c.tabControl, 1, &ti);
+        ti.pszText = const_cast<wchar_t*>(L"Arrange"); TabCtrl_InsertItem(c.tabControl, 2, &ti);
+        ti.pszText = const_cast<wchar_t*>(L"Groups");  TabCtrl_InsertItem(c.tabControl, 3, &ti);
+        TabCtrl_SetCurSel(c.tabControl, 2); // default: Arrange tab
+    }
+
     // -----------------------------------------------------------------------
     // Tooltips — registered after all controls are created so every HWND is
     // valid.  One shared TOOLTIPS_CLASS window serves the entire sidebar.
@@ -273,6 +432,8 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
     AddTip(tip, c.bulkTag,
         L"Apply or remove a tag for all selected students in the roster list\n"
         L"Select multiple names with Ctrl+click, then click here");
+    AddTip(tip, c.showLastNamesBtn,
+        L"Toggle whether names are shown with their last name everywhere in the app");
     AddTip(tip, c.applyRules,
         L"Parse the rules text and apply constraints for auto-assign\n\n"
         L"Formats (one per line):\n"
@@ -282,6 +443,11 @@ void CreateAllUIControls(HWND parent, ControlHandles& c) {
         L"  Alice + Bob @5       sit near, weight 5 (stronger)\n"
         L"  Alice == Bob         must sit together (same item)\n"
         L"  Group: Alice Bob Carol   cluster (same pod/table)");
+    AddTip(tip, c.groupRulesEdit,
+        L"Enter group-cluster rules separately from desk rules.\n"
+        L"Use: Group: Alice Bob Charlie");
+    AddTip(tip, c.groupResetBtn,
+        L"Clear remembered shuffle history so the next group shuffle can reuse the same pairings");
 
     // Layout tools
     AddTip(tip, c.addSmartboard,   L"Add a smartboard / whiteboard to the layout");
@@ -370,6 +536,30 @@ void ApplyFontsToControls(const ControlHandles& c, const Renderer& r) {
         c.frontEdgeLabel, c.frontEdgeButton
     };
     for (HWND h : ui) set(h, r.UiFont());
+    set(c.tabControl, r.UiFont());
+    // Roster tab
+    set(c.rosterView, r.UiFont());
+    set(c.addStudentBtn, r.UiFont()); set(c.removeStudentBtn, r.UiFont());
+    set(c.showLastNamesBtn, r.UiFont());
+    set(c.inlineFirstEdit, r.UiFont()); set(c.inlineLastEdit, r.UiFont());
+    set(c.saveStudentEdit, r.UiFont());
+    // Rules tab
+    set(c.keepApartList, r.UiFont()); set(c.keepTogetherList, r.UiFont());
+    set(c.addKeepApartBtn, r.UiFont()); set(c.remKeepApartBtn, r.UiFont());
+    set(c.addKeepTogetherBtn, r.UiFont()); set(c.remKeepTogetherBtn, r.UiFont());
+    set(c.keepApartHeader, r.UiFont()); set(c.keepApartDesc, r.UiFont());
+    set(c.keepTogetherHeader, r.UiFont()); set(c.keepTogetherDesc, r.UiFont());
+    set(c.deskTagHeader, r.UiFont()); set(c.deskTagDesc, r.UiFont());
+    set(c.deskTagList, r.UiFont());
+    set(c.addDeskTagRuleBtn, r.UiFont()); set(c.remDeskTagRuleBtn, r.UiFont());
+    // Groups tab
+    set(c.groupSizeLabel, r.UiFont()); set(c.groupSizeEdit, r.UiFont());
+    set(c.groupSizeCombo, r.UiFont());
+    set(c.groupOrLabel, r.UiFont()); set(c.groupOrValLabel, r.UiFont());
+    set(c.groupConfigList, r.UiFont()); set(c.groupsOutputList, r.UiFont());
+    set(c.shuffleGroupsBtn, r.UiFont());
+    set(c.groupRulesLabel, r.UiFont()); set(c.groupRulesEdit, r.UiFont());
+    set(c.groupRulesApply, r.UiFont()); set(c.groupResetBtn, r.UiFont());
     set(c.titleLabel, r.TitleFont());
     for (HWND h : {c.modeLabel, c.rosterLabel, c.rosterListLabel, c.restrictionLabel,
                    c.layoutToolsLabel, c.statusLabel,
@@ -401,24 +591,107 @@ void SyncRestrictionEditFromRules(const AppState& s, const ControlHandles& c) {
         text += a.first + L" + " + a.second + L"\r\n";
     for (const auto& t : s.mustTogether)
         text += t.first + L" == " + t.second + L"\r\n";
-    for (const auto& g : s.groupAffinities) {
-        if (!g.empty()) {
-            text += L"Group: ";
-            for (size_t i = 0; i < g.size(); ++i) {
-                if (i > 0) text += L" ";
-                text += g[i];
-            }
-            text += L"\r\n";
-        }
-    }
     SetWindowTextW(c.restrictionEdit, text.c_str());
+}
+
+void SyncGroupRulesEditFromState(const AppState& s, const ControlHandles& c) {
+    if (!c.groupRulesEdit) return;
+    std::wstring text;
+    for (const auto& g : s.groupAffinities) {
+        if (g.empty()) continue;
+        text += L"Group: ";
+        for (size_t i = 0; i < g.size(); ++i) {
+            if (i > 0) text += L" ";
+            text += g[i];
+        }
+        text += L"\r\n";
+    }
+    SetWindowTextW(c.groupRulesEdit, text.c_str());
 }
 
 void RefreshRosterList(const AppState& s, const ControlHandles& c) {
     if (!c.rosterList) return;
     SendMessageW(c.rosterList, LB_RESETCONTENT, 0, 0);
     for (const auto& n : s.roster)
-        SendMessageW(c.rosterList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n.c_str()));
+        SendMessageW(c.rosterList, LB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(DisplayStudentName(n, s.showLastNames).c_str()));
+}
+
+void SyncRosterView(const AppState& s, const ControlHandles& c) {
+    if (!c.rosterView) return;
+    ListView_DeleteAllItems(c.rosterView);
+    for (int i = 0; i < static_cast<int>(s.roster.size()); ++i) {
+        const auto& name = s.roster[static_cast<size_t>(i)];
+        const size_t sp  = name.find(L' ');
+        const std::wstring first = (sp != std::wstring::npos) ? name.substr(0, sp) : name;
+        const std::wstring last  = (s.showLastNames && sp != std::wstring::npos) ? name.substr(sp + 1) : L"";
+        LVITEMW lvi{};
+        lvi.mask     = LVIF_TEXT;
+        lvi.iItem    = i;
+        lvi.iSubItem = 0;
+        std::wstring num = std::to_wstring(i + 1);
+        lvi.pszText  = num.data();
+        const int idx = ListView_InsertItem(c.rosterView, &lvi);
+        if (idx >= 0) {
+            ListView_SetItemText(c.rosterView, idx, 1, const_cast<wchar_t*>(first.c_str()));
+            ListView_SetItemText(c.rosterView, idx, 2, const_cast<wchar_t*>(last.c_str()));
+        }
+    }
+
+    // Ghost row — always one empty row at the bottom showing the next number.
+    // Clicking its First/Last Name cell starts inline add without any button press.
+    {
+        const int ghostIdx = static_cast<int>(s.roster.size());
+        LVITEMW lvi{};
+        lvi.mask     = LVIF_TEXT;
+        lvi.iItem    = ghostIdx;
+        lvi.iSubItem = 0;
+        std::wstring num = std::to_wstring(ghostIdx + 1);
+        lvi.pszText  = num.data();
+        const int idx = ListView_InsertItem(c.rosterView, &lvi);
+        if (idx >= 0) {
+            wchar_t empty[] = L"";
+            ListView_SetItemText(c.rosterView, idx, 1, empty);
+            ListView_SetItemText(c.rosterView, idx, 2, empty);
+        }
+    }
+}
+
+void SyncRulesLists(const AppState& s, const ControlHandles& c) {
+    auto fillList = [](HWND lv, const std::vector<Restriction>& rules) {
+        if (!lv) return;
+        ListView_DeleteAllItems(lv);
+        for (int i = 0; i < static_cast<int>(rules.size()); ++i) {
+            LVITEMW lvi{};
+            lvi.mask = LVIF_TEXT; lvi.iItem = i; lvi.iSubItem = 0;
+            lvi.pszText = const_cast<wchar_t*>(rules[static_cast<size_t>(i)].first.c_str());
+            const int idx = ListView_InsertItem(lv, &lvi);
+            if (idx >= 0)
+                ListView_SetItemText(lv, idx, 1,
+                    const_cast<wchar_t*>(rules[static_cast<size_t>(i)].second.c_str()));
+        }
+    };
+    fillList(c.keepApartList,    s.restrictions);
+    fillList(c.keepTogetherList, s.affinities);
+
+    if (c.deskTagList) {
+        ListView_DeleteAllItems(c.deskTagList);
+        int row = 0;
+        for (const auto& name : s.roster) {
+            const StudentInfo* info = s.FindStudent(name);
+            if (!info) continue;
+            for (const auto& tag : info->forbiddenDesks) {
+                LVITEMW lvi{};
+                lvi.mask = LVIF_TEXT; lvi.iItem = row; lvi.iSubItem = 0;
+                lvi.pszText = const_cast<wchar_t*>(name.c_str());
+                const int idx = ListView_InsertItem(c.deskTagList, &lvi);
+                if (idx >= 0)
+                    ListView_SetItemText(c.deskTagList, idx, 1,
+                        const_cast<wchar_t*>(tag.c_str()));
+                ++row;
+            }
+        }
+    }
 }
 
 void SyncLayoutInspectorWithSelection(const AppState& s, const ControlHandles& c) {
@@ -517,6 +790,14 @@ void UpdateButtonState(const AppState& s, const ControlHandles& c, bool aaRunnin
     EnableWindow(c.importRoster,TRUE);
     EnableWindow(c.loadRoster,  TRUE);
     EnableWindow(c.saveNow,     TRUE);
+    EnableWindow(c.showLastNamesBtn, TRUE);
+    EnableWindow(c.inlineFirstEdit, TRUE);
+    EnableWindow(c.inlineLastEdit,  TRUE);
+    EnableWindow(c.saveStudentEdit, TRUE);
+    EnableWindow(c.groupSizeCombo, TRUE);
+    EnableWindow(c.groupRulesEdit, TRUE);
+    EnableWindow(c.groupRulesApply, TRUE);
+    EnableWindow(c.groupResetBtn,   TRUE);
     EnableWindow(c.rosterList,  seats);
     EnableWindow(c.restrictionEdit, seats);
     EnableWindow(c.applyRules,  seats);
@@ -595,5 +876,6 @@ void UpdateButtonState(const AppState& s, const ControlHandles& c, bool aaRunnin
 
     SendMessageW(c.seatMode,   BM_SETCHECK, s.chartMode == ChartMode::Seats  ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(c.layoutMode, BM_SETCHECK, s.chartMode == ChartMode::Layout ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(c.showLastNamesBtn, BM_SETCHECK, s.showLastNames ? BST_CHECKED : BST_UNCHECKED, 0);
     UpdateSidebarText(s, c);
 }

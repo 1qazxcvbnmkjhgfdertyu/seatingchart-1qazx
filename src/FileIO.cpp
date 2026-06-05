@@ -155,6 +155,7 @@ std::string BuildStateJson(const AppState& s) {
     j["room_h"]               = s.roomH;
     j["front_edge"]           = WideToUtf8(std::wstring(RoomEdgeName(s.frontEdge)));
     j["auto_assign_limit"]    = static_cast<int>(s.autoAssignSearchLimit);
+    j["show_last_names"]      = s.showLastNames;
 
     j["roster"] = njson::array();
     for (const auto& n : s.roster)
@@ -163,7 +164,8 @@ std::string BuildStateJson(const AppState& s) {
     // Per-student records (attributes / notes / colour), keyed by canonical name.
     j["students"] = njson::array();
     for (const auto& [key, info] : s.studentInfo) {
-        if (info.tags.empty() && info.notes.empty() && info.color == 0) continue;
+        if (info.tags.empty() && info.notes.empty() && info.color == 0 &&
+            info.forbiddenDesks.empty()) continue;
         njson js;
         js["name"] = WideToUtf8(key);
         if (info.color != 0)       js["color"] = static_cast<int>(info.color);
@@ -274,6 +276,7 @@ bool LoadStateFromJson(const std::string& text, AppState* out) {
         const std::string modeStr = j.value("mode", std::string{});
         if (modeStr != "Seats" && modeStr != "Layout") return false;
         const ChartMode mode = (modeStr == "Layout") ? ChartMode::Layout : ChartMode::Seats;
+        const bool showLastNames = j.value("show_last_names", true);
 
         // --- roster ---
         const njson& rosterArr = j["roster"];
@@ -472,6 +475,7 @@ bool LoadStateFromJson(const std::string& text, AppState* out) {
             out->roomW = (version >= 4) ? roomW : 0;
             out->roomH = (version >= 4) ? roomH : 0;
             out->frontEdge = frontEdge;
+            out->showLastNames = showLastNames;
         }
         return true;
     } catch (...) { return false; }

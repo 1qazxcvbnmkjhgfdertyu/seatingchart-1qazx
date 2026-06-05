@@ -7,8 +7,11 @@
 #include <algorithm>
 #include <commctrl.h>
 #include <cmath>
-#include <random>
 #include <commdlg.h>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <random>
+#include <limits>
 #include <string>
 #include <unordered_set>
 #include <windowsx.h>
@@ -123,6 +126,43 @@ LRESULT CALLBACK RosterListSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
         break;
     }
 
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+// Subclass proc for the floating cell-edit EDIT control.
+// Enter       → commit what is typed right now; do NOT advance to next field.
+// Tab         → commit + advance to the next field (last-name after first-name).
+// Escape      → cancel (discard).
+// KillFocus   → commit (user clicked elsewhere; always save what was typed).
+constexpr UINT_PTR kCellEditSubclassId = 3;
+LRESULT CALLBACK CellEditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                       LPARAM lParam, UINT_PTR, DWORD_PTR refData) {
+    auto* app = reinterpret_cast<SeatingChartApp*>(refData);
+    if (!app) return DefSubclassProc(hwnd, msg, wParam, lParam);
+    if (msg == WM_KEYDOWN) {
+        if (wParam == VK_RETURN) {
+            // Enter = commit immediately, no tab-advance
+            app->CommitInlineCellEdit(/*advance=*/false);
+            return 0;
+        }
+        if (wParam == VK_TAB) {
+            // Tab = commit + move to next column
+            app->CommitInlineCellEdit(/*advance=*/true);
+            return 0;
+        }
+        if (wParam == VK_ESCAPE) {
+            app->CancelInlineCellEdit();
+            return 0;
+        }
+    }
+    if (msg == WM_KILLFOCUS) {
+        // Clicking elsewhere always commits — the student is saved with whatever
+        // was typed.  We never silently discard what the user typed.
+        app->CommitInlineCellEdit(/*advance=*/false);
+        return DefSubclassProc(hwnd, msg, wParam, lParam);
+    }
+    if (msg == WM_NCDESTROY)
+        RemoveWindowSubclass(hwnd, CellEditSubclassProc, kCellEditSubclassId);
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
@@ -571,6 +611,10 @@ void SeatingChartApp::ApplyRoster(std::vector<std::wstring> roster) {
     tx->roster = std::move(roster);
     tx.Commit();
     RefreshFilteredRosterList();
+    SyncRosterView(state_, controls_);
+    RefreshGroupConfigList();
+    generatedGroups_.clear();
+    SyncGroupsOutput();
     SyncRosterEditFromRoster(state_, controls_);
     const auto rp = GetRosterFilePath();
     if (!rp.empty()) {
@@ -619,7 +663,6 @@ void SeatingChartApp::ApplyRestrictions(std::vector<Restriction> restrictions,
     tx->restrictions = std::move(restrictions);
     tx->affinities   = std::move(affinities);
     tx->mustTogether = std::move(mustTogether);
-    if (!groups.empty()) tx->groupAffinities = std::move(groups);
     tx.Commit();
     SyncRestrictionEditFromRules(state_, controls_);
     const auto rp = GetRestrictionsFilePath();
@@ -631,21 +674,22 @@ void SeatingChartApp::ApplyRestrictions(std::vector<Restriction> restrictions,
             text += a.first + L" + " + a.second + L"\r\n";
         for (const auto& t : state_.mustTogether)
             text += t.first + L" == " + t.second + L"\r\n";
-        for (const auto& g : state_.groupAffinities) {
-            if (!g.empty()) {
-                text += L"Group: ";
-                for (size_t i=0; i<g.size(); ++i) {
-                    if (i>0) text += L" ";
-                    text += g[i];
-                }
-                text += L"\r\n";
-            }
-        }
         WriteTextFileUtf8Atomic(rp, text);
     }
     SetStatus(std::to_wstring(state_.restrictions.size()) + L" keep-apart, "
               + std::to_wstring(state_.affinities.size()) + L" sit-near, "
               + std::to_wstring(state_.mustTogether.size()) + L" must-together rules");
+    ScheduleAutoSave(&state_, hwnd_);
+    if (!groups.empty()) {
+        ApplyGroupRules(std::move(groups));
+    }
+}
+
+void SeatingChartApp::ApplyGroupRules(std::vector<std::vector<std::wstring>> groups) {
+    AppState::Transaction tx(state_);
+    tx->groupAffinities = std::move(groups);
+    tx.Commit();
+    SyncGroupRulesEditFromState(state_, controls_);
     ScheduleAutoSave(&state_, hwnd_);
 }
 
@@ -720,6 +764,67 @@ void SeatingChartApp::AssignRosterSelectionToSeat() {
     SetStatus(L"Assigned " + text);
     InvalidateChart();
     ScheduleSave();
+}
+
+// Build the sizes for groups given N students and base size k.
+// Returns a vector where each entry is the size of one group.
+static std::vector<int> BuildGroupPattern(int N, int k) {
+    if (N < 2 || (k != 2 && k != 3)) return {};
+
+    std::vector<int> pat;
+    if (k == 2) {
+        if (N == 2) return {2};
+        if (N == 3) return {3};
+        if (N % 2 == 0) {
+            pat.assign(static_cast<size_t>(N / 2), 2);
+            return pat;
+        }
+        if (N >= 5) {
+            pat.assign(static_cast<size_t>((N - 3) / 2), 2);
+            pat.push_back(3);
+            return pat;
+        }
+        return {};
+    }
+
+    // k == 3
+    if (N == 3) return {3};
+    if (N == 4) return {2, 2};
+    if (N % 3 == 0) {
+        pat.assign(static_cast<size_t>(N / 3), 3);
+        return pat;
+    }
+    if (N % 3 == 1) {
+        if (N < 7) return {2, 2};
+        pat.assign(static_cast<size_t>((N - 4) / 3), 3);
+        pat.push_back(2);
+        pat.push_back(2);
+        return pat;
+    }
+
+    // N % 3 == 2
+    pat.assign(static_cast<size_t>(N / 3), 3);
+    pat.push_back(2);
+    return pat;
+}
+
+static std::wstring FormatGroupPattern(const std::vector<int>& pat) {
+    if (pat.empty()) return L"—";
+    const int minSz = *std::min_element(pat.begin(), pat.end());
+    const int maxSz = *std::max_element(pat.begin(), pat.end());
+    const auto szStr = [](int s) { return std::to_wstring(s); };
+    std::wstring out = std::to_wstring(pat.size()) + L" group" + (pat.size() > 1 ? L"s" : L"");
+    if (minSz == maxSz)
+        out += L" of " + szStr(minSz);
+    else
+        out += L" of " + szStr(minSz) + L" or " + szStr(maxSz);
+    return out;
+}
+
+// Canonical key for a pair (order-independent).
+static std::wstring GroupPairKey(const std::wstring& a, const std::wstring& b) {
+    const auto ca = CanonicalName(a), cb = CanonicalName(b);
+    return (ca < cb) ? (ca + L"|" + cb) : (cb + L"|" + ca);
 }
 
 static std::wstring ListBoxTextAt(HWND list, int index) {
@@ -822,6 +927,47 @@ void SeatingChartApp::EndRosterDrag(POINT screenPt, bool commit) {
 
     InvalidateChart();
     RefreshButtons();
+}
+
+void SeatingChartApp::DeleteSelectedRosterStudents() {
+    if (!controls_.rosterView) return;
+    const int total = ListView_GetItemCount(controls_.rosterView);
+    // Collect selected indices (all items, since list may show a partial roster after filter)
+    std::vector<int> selected;
+    for (int i = 0; i < total; ++i) {
+        if (ListView_GetItemState(controls_.rosterView, i, LVIS_SELECTED) & LVIS_SELECTED) {
+            if (i < static_cast<int>(state_.roster.size()))
+                selected.push_back(i);
+        }
+    }
+    if (selected.empty()) return;
+
+    // Collect canonical names for seat-clearing
+    std::vector<std::wstring> canonicals;
+    for (int idx : selected)
+        canonicals.push_back(CanonicalName(state_.roster[static_cast<size_t>(idx)]));
+
+    // Delete from highest index downward to keep indices stable
+    AppState::Transaction tx(state_);
+    for (int i = static_cast<int>(selected.size()) - 1; i >= 0; --i) {
+        tx->roster.erase(tx->roster.begin() + selected[static_cast<size_t>(i)]);
+    }
+    // Clear seats occupied by removed students
+    for (auto& item : tx->layoutItems)
+        for (auto& occ : item.occupants) {
+            const auto cn = CanonicalName(occ);
+            if (!cn.empty() && std::find(canonicals.begin(), canonicals.end(), cn) != canonicals.end())
+                occ.clear();
+        }
+    tx.Commit();
+
+    SyncRosterView(state_, controls_);
+    RefreshRosterList(state_, controls_);
+    RefreshGroupConfigList();
+    InvalidateChart();
+    SetStatus(L"Deleted " + std::to_wstring(selected.size()) + L" student" +
+              (selected.size() == 1 ? L"" : L"s"));
+    ScheduleSave();
 }
 
 void SeatingChartApp::BulkTagSelectedRoster() {
@@ -1179,8 +1325,13 @@ void SeatingChartApp::FullUIRefresh() {
 
 void SeatingChartApp::SyncAllEditsFromState() {
     RefreshFilteredRosterList();
+    SyncRosterView(state_, controls_);
+    SyncRulesLists(state_, controls_);
+    RefreshGroupConfigList();
+    SyncGroupsOutput();
     SyncRosterEditFromRoster(state_, controls_);
     SyncRestrictionEditFromRules(state_, controls_);
+    SyncGroupRulesEditFromState(state_, controls_);
     SyncLayoutInspectorWithSelection(state_, controls_);
 }
 
@@ -1346,15 +1497,17 @@ void SeatingChartApp::ResizeSidebarLive(POINT pt) {
     RECT rc{}; GetClientRect(hwnd_, &rc);
     const int cw = std::max(1, static_cast<int>(rc.right - rc.left));
     const int ch = std::max(1, static_cast<int>(rc.bottom - rc.top));
-    const int newWidth = std::clamp(cw - static_cast<int>(pt.x),
+    const int stripW = classListBox_ ? Scale(kClassStripW) : 0;
+    const int maxW = std::min(Scale(kSidebarMaxWidth), std::max(Scale(kSidebarMinWidth), cw - stripW - Margin() - Scale(220)));
+    // Panel is on the right; dragging the LEFT edge: newWidth = distance from pt.x to right boundary
+    const int newWidth = std::clamp(cw - stripW - static_cast<int>(pt.x),
                                     Scale(kSidebarMinWidth), Scale(kSidebarMaxWidth));
-    if (newWidth == sidebarWidth_) return;
+    sidebarWidth_ = std::min(newWidth, maxW);
 
-    sidebarWidth_ = newWidth;
     layout_.client = rc;
-    layout_.panel = { cw - sidebarWidth_, 0, cw, ch };
+    layout_.panel = { cw - stripW - sidebarWidth_, 0, cw - stripW, ch };
     layout_.chart = { Margin(), HeaderHeight(),
-                      std::max(Margin() + Scale(40), cw - sidebarWidth_ - Margin()),
+                      std::max(Margin() + Scale(40), cw - stripW - sidebarWidth_ - Margin()),
                       std::max(HeaderHeight() + Scale(40), ch - Margin()) };
     layoutTx_ = ComputeLayoutViewTransform(layout_.chart, state_.roomW, state_.roomH);
 
@@ -1540,6 +1693,805 @@ void SeatingChartApp::CommitFrontEdge(RoomEdge edge) {
 }
 
 // ---------------------------------------------------------------------------
+// Class management
+// ---------------------------------------------------------------------------
+
+std::wstring SeatingChartApp::GetClassFilePath(int idx) const {
+    const auto base = GetAppDataStateDir();
+    if (base.empty()) return L"";
+    return base + L"\\class_" + std::to_wstring(idx) + L".json";
+}
+
+void SeatingChartApp::InitClassList() {
+    // Try to load classes.json; if not found, build a default one-class list
+    const auto base = GetAppDataStateDir();
+    const auto manifest = base.empty() ? L"" : base + L"\\classes.json";
+    classList_.clear();
+    activeClassIdx_ = 0;
+
+    if (!manifest.empty() && GetFileAttributesW(manifest.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        try {
+            std::ifstream f(WideToUtf8(manifest));
+            if (f.is_open()) {
+                const std::string text((std::istreambuf_iterator<char>(f)),
+                                       std::istreambuf_iterator<char>());
+                nlohmann::json j = nlohmann::json::parse(text);
+                for (auto& entry : j.value("classes", nlohmann::json::array())) {
+                    ClassInfo ci;
+                    ci.name = Utf8ToWide(entry.value("name", std::string("Class 1")));
+                    ci.file = Utf8ToWide(entry.value("file", std::string("class_0.json")));
+                    classList_.push_back(std::move(ci));
+                }
+                activeClassIdx_ = j.value("active", 0);
+                if (activeClassIdx_ >= static_cast<int>(classList_.size()))
+                    activeClassIdx_ = 0;
+            }
+        } catch (...) {}
+    }
+
+    if (classList_.empty()) {
+        classList_.push_back({ state_.className.empty() ? L"Class 1" : state_.className,
+                               L"class_0.json" });
+        activeClassIdx_ = 0;
+        SaveClassList();
+    }
+}
+
+void SeatingChartApp::SaveClassList() {
+    const auto base = GetAppDataStateDir();
+    if (base.empty()) return;
+    (void)EnsureDirectoryExists(base);
+    try {
+        nlohmann::json j;
+        nlohmann::json arr = nlohmann::json::array();
+        for (auto& ci : classList_) {
+            nlohmann::json e;
+            e["name"] = WideToUtf8(ci.name);
+            e["file"] = WideToUtf8(ci.file);
+            arr.push_back(e);
+        }
+        j["classes"] = arr;
+        j["active"]  = activeClassIdx_;
+        const auto path = base + L"\\classes.json";
+        std::ofstream f(WideToUtf8(path));
+        if (f.is_open()) f << j.dump(2);
+    } catch (...) {}
+}
+
+void SeatingChartApp::SyncClassListBox() {
+    if (!classListBox_) return;
+    SendMessageW(classListBox_, LB_RESETCONTENT, 0, 0);
+    for (auto& ci : classList_)
+        SendMessageW(classListBox_, LB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(ci.name.c_str()));
+    if (activeClassIdx_ < static_cast<int>(classList_.size()))
+        SendMessageW(classListBox_, LB_SETCURSEL, activeClassIdx_, 0);
+}
+
+void SeatingChartApp::SwitchToClass(int idx) {
+    if (idx == activeClassIdx_ || idx < 0 || idx >= static_cast<int>(classList_.size())) return;
+    // Dismiss any active inline cell edit before switching — prevents focus battle
+    CancelInlineCellEdit();
+    // Save current class
+    SaveStateNow(&state_, false);
+    const auto curFile = GetClassFilePath(activeClassIdx_);
+    if (!curFile.empty()) {
+        // Copy the canonical state file to the per-class file
+        const auto stateFile = GetStateFilePath();
+        if (!stateFile.empty()) {
+            std::ifstream src(WideToUtf8(stateFile), std::ios::binary);
+            std::ofstream dst(WideToUtf8(curFile),   std::ios::binary);
+            if (src && dst) dst << src.rdbuf();
+        }
+    }
+    // Load the new class
+    activeClassIdx_ = idx;
+    state_.className = classList_[idx].name;
+    const auto newFile = GetClassFilePath(idx);
+    if (!newFile.empty() && GetFileAttributesW(newFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        state_.Init();
+        std::vector<unsigned char> bytes;
+        if (ReadAllBytes(newFile, &bytes) && !bytes.empty()) {
+            const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            (void)LoadStateFromJson(text, &state_);
+        }
+        state_.ClearUndoHistory();
+    } else {
+        // New/fresh class
+        state_.Init();
+        state_.className = classList_[idx].name;
+    }
+    SaveClassList();
+    SyncAllEditsFromState();
+    SyncRosterView(state_, controls_);
+    SyncRulesLists(state_, controls_);
+    RefreshSelectionFlags();
+    UpdateButtonState(state_, controls_, aaRunning_);
+    SyncClassListBox();
+    InvalidateChart();
+    SetStatus(L"Switched to " + classList_[idx].name);
+}
+
+void SeatingChartApp::NewClass() {
+    const int idx = static_cast<int>(classList_.size());
+    const std::wstring name = L"Class " + std::to_wstring(idx + 1);
+    classList_.push_back({ name, L"class_" + std::to_wstring(idx) + L".json" });
+    SaveClassList();
+    const int previous = activeClassIdx_;
+    activeClassIdx_ = -1;
+    if (previous >= 0 && previous < static_cast<int>(classList_.size())) activeClassIdx_ = previous;
+    SwitchToClass(idx);
+}
+
+void SeatingChartApp::RenameClass(int idx, const std::wstring& name) {
+    if (idx < 0 || idx >= static_cast<int>(classList_.size())) return;
+    const std::wstring trimmed = TrimCopy(name);
+    if (trimmed.empty()) return;
+    classList_[static_cast<size_t>(idx)].name = trimmed;
+    if (idx == activeClassIdx_) {
+        state_.className = trimmed;
+    }
+    SaveClassList();
+    SyncClassListBox();
+    SetStatus(L"Renamed class to " + trimmed);
+}
+
+// ---------------------------------------------------------------------------
+// Roster: add / edit / remove student
+// ---------------------------------------------------------------------------
+
+bool SeatingChartApp::PromptStudentName(const std::wstring& title,
+                                         std::wstring& first, std::wstring& last) {
+    struct Dlg { HWND parent; HWND eFirst, eLast; bool ok;
+                 std::wstring initFirst, initLast; } d{hwnd_, {}, {}, false, first, last};
+    const wchar_t* cls = L"SeatingChartStudentDlg";
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = [](HWND hw, UINT msg, WPARAM wp, LPARAM lp) -> LRESULT {
+            auto* s = reinterpret_cast<Dlg*>(GetWindowLongPtrW(hw, GWLP_USERDATA));
+            if (msg == WM_NCCREATE) {
+                s = reinterpret_cast<Dlg*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
+                SetWindowLongPtrW(hw, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(s));
+            }
+            switch (msg) {
+            case WM_CREATE: {
+                auto lbl = [&](const wchar_t* t, int y){
+                    CreateWindowExW(0,L"STATIC",t,WS_CHILD|WS_VISIBLE,
+                        Scale(12),y,Scale(70),Scale(20),hw,nullptr,GetModuleHandleW(nullptr),nullptr);};
+                lbl(L"First Name:", Scale(14));
+                lbl(L"Last Name:",  Scale(48));
+                s->eFirst = CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",L"",
+                    WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,
+                    Scale(86),Scale(12),Scale(140),Scale(24),hw,nullptr,GetModuleHandleW(nullptr),nullptr);
+                s->eLast  = CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",L"",
+                    WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,
+                    Scale(86),Scale(46),Scale(140),Scale(24),hw,nullptr,GetModuleHandleW(nullptr),nullptr);
+                SetWindowTextW(s->eFirst, s->initFirst.c_str());
+                SetWindowTextW(s->eLast,  s->initLast.c_str());
+                CreateWindowExW(0,L"BUTTON",L"OK",WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,
+                    Scale(36),Scale(82),Scale(76),Scale(28),hw,(HMENU)IDOK,GetModuleHandleW(nullptr),nullptr);
+                CreateWindowExW(0,L"BUTTON",L"Cancel",WS_CHILD|WS_VISIBLE,
+                    Scale(120),Scale(82),Scale(76),Scale(28),hw,(HMENU)IDCANCEL,GetModuleHandleW(nullptr),nullptr);
+                return 0; }
+            case WM_COMMAND:
+                if (LOWORD(wp) == IDOK) {
+                    wchar_t buf[128]{};
+                    GetWindowTextW(s->eFirst, buf, 128); s->initFirst = buf;
+                    GetWindowTextW(s->eLast,  buf, 128); s->initLast  = buf;
+                    s->ok = true; DestroyWindow(hw); return 0;
+                }
+                if (LOWORD(wp) == IDCANCEL) { DestroyWindow(hw); return 0; }
+                break;
+            case WM_CLOSE: DestroyWindow(hw); return 0;
+            }
+            return DefWindowProcW(hw, msg, wp, lp);
+        };
+        wc.hInstance     = GetModuleHandleW(nullptr);
+        wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = cls;
+        RegisterClassW(&wc); reg = true;
+    }
+    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, cls, title.c_str(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, Scale(244), Scale(144),
+        hwnd_, nullptr, GetModuleHandleW(nullptr), &d);
+    if (!dlg) return false;
+    RECT pr{}, dr{};
+    GetWindowRect(hwnd_, &pr); GetWindowRect(dlg, &dr);
+    SetWindowPos(dlg, HWND_TOP,
+        pr.left + ((pr.right-pr.left)-(dr.right-dr.left))/2,
+        pr.top  + ((pr.bottom-pr.top)-(dr.bottom-dr.top))/2, 0, 0, SWP_NOSIZE);
+    EnableWindow(hwnd_, FALSE);
+    ShowWindow(dlg, SW_SHOW);
+    MSG m{}; while (IsWindow(dlg) && GetMessageW(&m, nullptr, 0, 0) > 0) {
+        TranslateMessage(&m); DispatchMessageW(&m); }
+    EnableWindow(hwnd_, TRUE); SetActiveWindow(hwnd_);
+    if (!d.ok) return false;
+    first = d.initFirst; last = d.initLast;
+    return true;
+}
+
+bool SeatingChartApp::PromptRulePair(const std::wstring& title,
+                                      std::wstring& nameA, std::wstring& nameB) {
+    // Reuse PromptStudentName as a two-field "Name A / Name B" dialog
+    return PromptStudentName(title, nameA, nameB);
+}
+
+bool SeatingChartApp::PromptSingleText(const std::wstring& title,
+                                       const std::wstring& label,
+                                       std::wstring& value) {
+    struct Dlg {
+        HWND parent;
+        HWND edit;
+        bool ok;
+        std::wstring init;
+        std::wstring label;
+    } d{ hwnd_, {}, false, value, label };
+    const wchar_t* cls = L"SeatingChartSingleTextDlg";
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = [](HWND hw, UINT msg, WPARAM wp, LPARAM lp) -> LRESULT {
+            auto* s = reinterpret_cast<Dlg*>(GetWindowLongPtrW(hw, GWLP_USERDATA));
+            if (msg == WM_NCCREATE) {
+                s = reinterpret_cast<Dlg*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
+                SetWindowLongPtrW(hw, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(s));
+            }
+            switch (msg) {
+            case WM_CREATE: {
+                CreateWindowExW(0, L"STATIC", s->label.c_str(), WS_CHILD | WS_VISIBLE,
+                    Scale(12), Scale(14), Scale(200), Scale(20), hw, nullptr,
+                    GetModuleHandleW(nullptr), nullptr);
+                s->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                    WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                    Scale(12), Scale(40), Scale(220), Scale(24), hw, nullptr,
+                    GetModuleHandleW(nullptr), nullptr);
+                SetWindowTextW(s->edit, s->init.c_str());
+                CreateWindowExW(0, L"BUTTON", L"OK",
+                    WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                    Scale(36), Scale(78), Scale(76), Scale(28), hw,
+                    reinterpret_cast<HMENU>(IDOK), GetModuleHandleW(nullptr), nullptr);
+                CreateWindowExW(0, L"BUTTON", L"Cancel",
+                    WS_CHILD | WS_VISIBLE,
+                    Scale(120), Scale(78), Scale(76), Scale(28), hw,
+                    reinterpret_cast<HMENU>(IDCANCEL), GetModuleHandleW(nullptr), nullptr);
+                return 0;
+            }
+            case WM_COMMAND:
+                if (LOWORD(wp) == IDOK) {
+                    wchar_t buf[256]{};
+                    GetWindowTextW(s->edit, buf, 256);
+                    s->init = buf;
+                    s->ok = true;
+                    DestroyWindow(hw);
+                    return 0;
+                }
+                if (LOWORD(wp) == IDCANCEL) {
+                    DestroyWindow(hw);
+                    return 0;
+                }
+                break;
+            case WM_CLOSE:
+                DestroyWindow(hw);
+                return 0;
+            }
+            return DefWindowProcW(hw, msg, wp, lp);
+        };
+        wc.hInstance     = GetModuleHandleW(nullptr);
+        wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = cls;
+        RegisterClassW(&wc);
+        reg = true;
+    }
+    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, cls, title.c_str(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, Scale(256), Scale(148),
+        hwnd_, nullptr, GetModuleHandleW(nullptr), &d);
+    if (!dlg) return false;
+    RECT pr{}, dr{};
+    GetWindowRect(hwnd_, &pr); GetWindowRect(dlg, &dr);
+    SetWindowPos(dlg, HWND_TOP,
+        pr.left + ((pr.right - pr.left) - (dr.right - dr.left)) / 2,
+        pr.top  + ((pr.bottom - pr.top) - (dr.bottom - dr.top)) / 2,
+        0, 0, SWP_NOSIZE);
+    EnableWindow(hwnd_, FALSE);
+    ShowWindow(dlg, SW_SHOW);
+    MSG m{};
+    while (IsWindow(dlg) && GetMessageW(&m, nullptr, 0, 0) > 0) {
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
+    EnableWindow(hwnd_, TRUE);
+    SetActiveWindow(hwnd_);
+    if (!d.ok) return false;
+    value = d.init;
+    return true;
+}
+
+void SeatingChartApp::ToggleShowLastNames() {
+    AppState::Transaction tx(state_);
+    tx->showLastNames = !tx->showLastNames;
+    tx.Commit();
+    SyncAllEditsFromState();
+    UpdateButtonState(state_, controls_, aaRunning_);
+    InvalidateChart();
+    ScheduleSave();
+}
+
+// ---------------------------------------------------------------------------
+// Groups
+// ---------------------------------------------------------------------------
+
+void SeatingChartApp::RefreshGroupConfigList() {
+    if (!controls_.groupConfigList) return;
+    SendMessageW(controls_.groupConfigList, LB_RESETCONTENT, 0, 0);
+    const int N = static_cast<int>(state_.roster.size());
+    if (N == 0) {
+        SendMessageW(controls_.groupConfigList, LB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(L"(No students in roster)"));
+        if (controls_.groupSizeEdit) SetWindowTextW(controls_.groupSizeEdit, L"2");
+        groupSizePref_ = 2;
+        return;
+    }
+
+    const std::vector<int> options = (N >= 6 && N % 3 == 0)
+        ? std::vector<int>{2, 3}
+        : std::vector<int>{2};
+
+    int bestRow = 0;
+    for (int i = 0; i < static_cast<int>(options.size()); ++i) {
+        const int base = options[static_cast<size_t>(i)];
+        const auto pattern = BuildGroupPattern(N, base);
+        const std::wstring line = L"Groups of " + std::to_wstring(base) +
+                                  L"  —  " + FormatGroupPattern(pattern);
+        const int idx = static_cast<int>(SendMessageW(
+            controls_.groupConfigList, LB_ADDSTRING, 0,
+            reinterpret_cast<LPARAM>(line.c_str())));
+        if (idx >= 0) {
+            SendMessageW(controls_.groupConfigList, LB_SETITEMDATA, idx, static_cast<LPARAM>(base));
+        }
+        if (base == groupSizePref_) bestRow = i;
+    }
+    if (bestRow >= static_cast<int>(options.size())) bestRow = 0;
+    groupSizePref_ = options[static_cast<size_t>(bestRow)];
+    SendMessageW(controls_.groupConfigList, LB_SETCURSEL, bestRow, 0);
+    // Also refresh the new combobox-based group size selector
+    RefreshGroupCombo();
+}
+
+void SeatingChartApp::ShuffleGroups() {
+    const int N = static_cast<int>(state_.roster.size());
+    if (N == 0) { generatedGroups_.clear(); SyncGroupsOutput(); return; }
+
+    // Get base size from the combo (fallback to groupSizePref_)
+    int base = groupSizePref_;
+    if (controls_.groupSizeCombo) {
+        const int sel = static_cast<int>(SendMessageW(controls_.groupSizeCombo, CB_GETCURSEL, 0, 0));
+        if (sel >= 0) {
+            wchar_t buf[16]{};
+            SendMessageW(controls_.groupSizeCombo, CB_GETLBTEXT, sel, reinterpret_cast<LPARAM>(buf));
+            if (buf[0]) base = _wtoi(buf);
+        }
+    }
+    if (base < 2) base = 2;
+    groupSizePref_ = base;
+
+    const std::vector<int> pattern = BuildGroupPattern(N, base);
+    if (pattern.empty()) { generatedGroups_.clear(); SyncGroupsOutput(); return; }
+
+    auto scoreGroups = [&](const std::vector<std::vector<std::wstring>>& groups) {
+        size_t score = 0;
+        for (const auto& grp : groups) {
+            for (size_t i = 0; i < grp.size(); ++i) {
+                for (size_t j = i + 1; j < grp.size(); ++j) {
+                    const auto key = GroupPairKey(grp[i], grp[j]);
+                    const auto it = groupPairHistory_.find(key);
+                    if (it != groupPairHistory_.end()) score += 1u + static_cast<size_t>(it->second);
+                }
+            }
+        }
+        return score;
+    };
+
+    std::mt19937 rng(static_cast<unsigned>(GetTickCount64()));
+    std::vector<std::vector<std::wstring>> bestGroups;
+    size_t bestScore = std::numeric_limits<size_t>::max();
+
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        std::vector<std::wstring> shuffled = state_.roster;
+        std::shuffle(shuffled.begin(), shuffled.end(), rng);
+
+        std::vector<std::vector<std::wstring>> groups;
+        groups.reserve(pattern.size());
+        size_t pos = 0;
+        for (int sz : pattern) {
+            std::vector<std::wstring> grp;
+            for (int j = 0; j < sz && pos < shuffled.size(); ++j, ++pos)
+                grp.push_back(shuffled[pos]);
+            if (!grp.empty()) groups.push_back(std::move(grp));
+        }
+        const size_t score = scoreGroups(groups);
+        if (groups.size() == pattern.size() && score <= bestScore) {
+            bestScore = score;
+            bestGroups = std::move(groups);
+        }
+    }
+
+    if (bestGroups.empty()) {
+        std::vector<std::wstring> shuffled = state_.roster;
+        std::shuffle(shuffled.begin(), shuffled.end(), rng);
+        size_t pos = 0;
+        for (int sz : pattern) {
+            std::vector<std::wstring> grp;
+            for (int j = 0; j < sz && pos < shuffled.size(); ++j, ++pos)
+                grp.push_back(shuffled[pos]);
+            if (!grp.empty()) bestGroups.push_back(std::move(grp));
+        }
+    }
+
+    generatedGroups_ = std::move(bestGroups);
+    for (const auto& grp : generatedGroups_) {
+        for (size_t i = 0; i < grp.size(); ++i) {
+            for (size_t j = i + 1; j < grp.size(); ++j) {
+                ++groupPairHistory_[GroupPairKey(grp[i], grp[j])];
+            }
+        }
+    }
+    SyncGroupsOutput();
+}
+
+void SeatingChartApp::SyncGroupsOutput() {
+    if (!controls_.groupsOutputList) return;
+    SendMessageW(controls_.groupsOutputList, LB_RESETCONTENT, 0, 0);
+    if (generatedGroups_.empty()) {
+        SendMessageW(controls_.groupsOutputList, LB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(L"Click Shuffle Groups to generate."));
+        return;
+    }
+    for (int i = 0; i < static_cast<int>(generatedGroups_.size()); ++i) {
+        const auto& g = generatedGroups_[static_cast<size_t>(i)];
+        std::wstring line = L"Group " + std::to_wstring(i + 1) + L":  ";
+        for (size_t j = 0; j < g.size(); ++j) {
+            if (j) line += L",  ";
+            line += DisplayStudentName(g[j], state_.showLastNames);
+        }
+        SendMessageW(controls_.groupsOutputList, LB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(line.c_str()));
+    }
+}
+
+void SeatingChartApp::ResetGroupShuffleMemory() {
+    groupPairHistory_.clear();
+    SetStatus(L"Group shuffle memory reset — all students can pair again");
+}
+
+// RefreshGroupCombo — populates the "Groups of:" combobox with valid base sizes
+// and updates the "or N" label showing the overflow group size.
+void SeatingChartApp::RefreshGroupCombo() {
+    if (!controls_.groupSizeCombo) return;
+    const int N = static_cast<int>(state_.roster.size());
+
+    // Preserve current selection before repopulating
+    wchar_t curText[16]{};
+    const int curSel = static_cast<int>(SendMessageW(controls_.groupSizeCombo, CB_GETCURSEL, 0, 0));
+    if (curSel >= 0) SendMessageW(controls_.groupSizeCombo, CB_GETLBTEXT, curSel, reinterpret_cast<LPARAM>(curText));
+    int preservedK = curText[0] ? _wtoi(curText) : groupSizePref_;
+
+    SendMessageW(controls_.groupSizeCombo, CB_RESETCONTENT, 0, 0);
+    if (N < 2) {
+        SendMessageW(controls_.groupSizeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"—"));
+        SendMessageW(controls_.groupSizeCombo, CB_SETCURSEL, 0, 0);
+        if (controls_.groupOrValLabel) SetWindowTextW(controls_.groupOrValLabel, L"");
+        return;
+    }
+
+    // Valid base sizes: k in [2 .. floor(N/2)], each giving at least 2 groups
+    const int maxK = N / 2;
+    int selIdx = 0;
+    for (int k = 2; k <= maxK; ++k) {
+        const std::wstring txt = std::to_wstring(k);
+        const int idx = static_cast<int>(
+            SendMessageW(controls_.groupSizeCombo, CB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(txt.c_str())));
+        if (k == preservedK) selIdx = idx;
+    }
+    if (SendMessageW(controls_.groupSizeCombo, CB_GETCOUNT, 0, 0) == 0) {
+        SendMessageW(controls_.groupSizeCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"2"));
+    }
+    SendMessageW(controls_.groupSizeCombo, CB_SETCURSEL, selIdx, 0);
+
+    // Get the currently selected k and update the "or N" label
+    wchar_t buf[16]{};
+    SendMessageW(controls_.groupSizeCombo, CB_GETLBTEXT, selIdx, reinterpret_cast<LPARAM>(buf));
+    const int k = buf[0] ? _wtoi(buf) : 2;
+    groupSizePref_ = k;
+
+    const int extra = N % k; // if 0 → all groups equal size; else some get k+1
+    if (controls_.groupOrValLabel) {
+        if (extra == 0)
+            SetWindowTextW(controls_.groupOrValLabel, L"—");
+        else
+            SetWindowTextW(controls_.groupOrValLabel, std::to_wstring(k + 1).c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inline cell edit — floating EDIT overlay directly on the rosterView cells
+// ---------------------------------------------------------------------------
+
+void SeatingChartApp::BeginInlineCellEdit(int item, int subItem) {
+    if (!controls_.rosterView || !controls_.sidebar) return;
+    // Allow item == roster.size() only when adding new (temp row already inserted)
+    if (item < 0 || subItem < 1 || subItem > 2) return;
+
+    CancelInlineCellEdit(); // dismiss any existing edit first
+
+    // Get the cell rect in rosterView client coords, then map to sidebar coords
+    RECT cellRect{};
+    ListView_GetSubItemRect(controls_.rosterView, item, subItem, LVIR_BOUNDS, &cellRect);
+    MapWindowPoints(controls_.rosterView, controls_.sidebar,
+                    reinterpret_cast<POINT*>(&cellRect), 2);
+
+    // Pre-fill with current value
+    std::wstring val;
+    if (item < static_cast<int>(state_.roster.size())) {
+        const auto& name = state_.roster[static_cast<size_t>(item)];
+        size_t sp = name.find(L' ');
+        if (subItem == 1) val = (sp != std::wstring::npos) ? name.substr(0, sp) : name;
+        else              val = (sp != std::wstring::npos) ? name.substr(sp + 1) : L"";
+    }
+    // For new rows with pendingFirst already set, keep it
+    if (cellEdit_.isNew && subItem == 2 && !cellEdit_.pendingFirst.empty())
+        val = L""; // last name starts empty
+
+    cellEdit_.item    = item;
+    cellEdit_.subItem = subItem;
+    // isNew / pendingFirst are set by caller before calling this
+
+    // Create the floating EDIT as a child of the sidebar (same parent as rosterView)
+    const int h = std::max(Scale(18), static_cast<int>(cellRect.bottom - cellRect.top));
+    cellEdit_.wnd = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", val.c_str(),
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        cellRect.left, cellRect.top,
+        cellRect.right - cellRect.left, h,
+        controls_.sidebar, nullptr, GetModuleHandleW(nullptr), nullptr);
+
+    if (cellEdit_.wnd) {
+        SendMessageW(cellEdit_.wnd, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(renderer_.UiFont()), TRUE);
+        SetWindowSubclass(cellEdit_.wnd, CellEditSubclassProc,
+                          kCellEditSubclassId, reinterpret_cast<DWORD_PTR>(this));
+        SetFocus(cellEdit_.wnd);
+        SendMessageW(cellEdit_.wnd, EM_SETSEL, 0, -1); // select all
+    }
+}
+
+// advance=true  → Tab key: after first-name, open last-name editor for same row.
+// advance=false → Enter key or focus-loss: commit immediately, no second editor.
+void SeatingChartApp::CommitInlineCellEdit(bool advance) {
+    if (!cellEdit_.wnd) return; // guard against re-entry
+
+    HWND wnd = cellEdit_.wnd;
+    cellEdit_.wnd = nullptr; // clear FIRST to block re-entry from WM_KILLFOCUS
+
+    wchar_t buf[256]{};
+    GetWindowTextW(wnd, buf, 256);
+    const std::wstring val = TrimCopy(buf);
+
+    const int  item    = cellEdit_.item;
+    const int  sub     = cellEdit_.subItem;
+    const bool isNew   = cellEdit_.isNew;
+    const std::wstring pending = cellEdit_.pendingFirst;
+    cellEdit_ = {};    // fully clear state before any SyncRosterView call
+
+    DestroyWindow(wnd);
+
+    // -----------------------------------------------------------------------
+    // Adding a brand-new student
+    // -----------------------------------------------------------------------
+    if (isNew) {
+        if (sub == 1) {
+            if (val.empty()) {
+                // Nothing typed — ghost row stays, nothing added
+                SyncRosterView(state_, controls_);
+                return;
+            }
+
+            if (advance) {
+                // Tab: save first name visually and open last-name editor
+                if (controls_.rosterView)
+                    ListView_SetItemText(controls_.rosterView, item,
+                                         1, const_cast<wchar_t*>(val.c_str()));
+                cellEdit_.isNew        = true;
+                cellEdit_.pendingFirst = val;
+                BeginInlineCellEdit(item, 2);
+                return;
+            }
+            // Enter / focus-loss: commit with first name only
+            AppState::Transaction tx(state_);
+            tx->roster.push_back(val);
+            tx.Commit();
+            SyncRosterView(state_, controls_);
+            RefreshRosterList(state_, controls_);
+            RefreshGroupConfigList();
+            SetStatus(L"Added " + val);
+            ScheduleSave();
+            return;
+        }
+
+        // sub == 2: completing last-name step (Tab from first-name landed here)
+        const std::wstring full = val.empty() ? pending : pending + L" " + val;
+        if (full.empty()) { SyncRosterView(state_, controls_); return; }
+        AppState::Transaction tx(state_);
+        tx->roster.push_back(full);
+        tx.Commit();
+        SyncRosterView(state_, controls_);
+        RefreshRosterList(state_, controls_);
+        RefreshGroupConfigList();
+        SetStatus(L"Added " + full);
+        ScheduleSave();
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Editing an existing student
+    // -----------------------------------------------------------------------
+    if (item < 0 || item >= static_cast<int>(state_.roster.size())) return;
+
+    const auto& oldName = state_.roster[static_cast<size_t>(item)];
+    size_t sp = oldName.find(L' ');
+    std::wstring first = (sp != std::wstring::npos) ? oldName.substr(0, sp) : oldName;
+    std::wstring last  = (sp != std::wstring::npos) ? oldName.substr(sp + 1) : L"";
+    if (sub == 1) first = val;
+    else          last  = val;
+
+    const std::wstring full = first.empty() ? last :
+                              (last.empty()  ? first : first + L" " + last);
+    if (!full.empty() && full != oldName) {
+        AppState::Transaction tx(state_);
+        tx->roster[static_cast<size_t>(item)] = full;
+        tx.Commit();
+        SyncRosterView(state_, controls_);
+        RefreshRosterList(state_, controls_);
+        RefreshGroupConfigList();
+        ScheduleSave();
+    }
+    // Tab from First Name → move to Last Name for the same row
+    if (advance && sub == 1) BeginInlineCellEdit(item, 2);
+}
+
+void SeatingChartApp::CancelInlineCellEdit() {
+    if (!cellEdit_.wnd) return;
+    HWND wnd = cellEdit_.wnd;
+    const bool wasNew = cellEdit_.isNew;
+    cellEdit_ = {};
+    DestroyWindow(wnd);
+    // For new adds, just resync — the ghost row is part of the list already,
+    // so a full resync restores everything cleanly with no orphan rows.
+    if (wasNew)
+        SyncRosterView(state_, controls_);
+}
+
+// PromptRulePairDropdown — shows a dialog with two comboboxes (populated from roster)
+// instead of two free-text fields.
+bool SeatingChartApp::PromptRulePairDropdown(const std::wstring& title,
+                                             std::wstring& nameA, std::wstring& nameB) {
+    if (state_.roster.empty()) {
+        MessageBoxW(hwnd_, L"Add students to the roster first.", title.c_str(),
+                    MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+
+    struct Dlg {
+        HWND parent;
+        HWND cbA, cbB;
+        bool ok;
+        std::wstring selA, selB;
+        const std::vector<std::wstring>* roster;
+    } d{ hwnd_, {}, {}, false, {}, {}, &state_.roster };
+
+    const wchar_t* cls = L"SeatingChartRulePairDropDlg";
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = [](HWND hw, UINT msg, WPARAM wp, LPARAM lp) -> LRESULT {
+            auto* s = reinterpret_cast<Dlg*>(GetWindowLongPtrW(hw, GWLP_USERDATA));
+            if (msg == WM_NCCREATE) {
+                s = reinterpret_cast<Dlg*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
+                SetWindowLongPtrW(hw, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(s));
+            }
+            switch (msg) {
+            case WM_CREATE: {
+                auto mkLbl = [&](const wchar_t* t, int y) {
+                    CreateWindowExW(0, L"STATIC", t, WS_CHILD | WS_VISIBLE,
+                        Scale(12), y, Scale(80), Scale(20), hw,
+                        nullptr, GetModuleHandleW(nullptr), nullptr);
+                };
+                mkLbl(L"Student A:", Scale(14));
+                mkLbl(L"Student B:", Scale(48));
+                s->cbA = CreateWindowExW(0, L"COMBOBOX", nullptr,
+                    WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+                    Scale(96), Scale(12), Scale(170), Scale(200), hw,
+                    nullptr, GetModuleHandleW(nullptr), nullptr);
+                s->cbB = CreateWindowExW(0, L"COMBOBOX", nullptr,
+                    WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+                    Scale(96), Scale(46), Scale(170), Scale(200), hw,
+                    nullptr, GetModuleHandleW(nullptr), nullptr);
+                // Populate both from roster
+                if (s->roster) {
+                    for (const auto& nm : *s->roster) {
+                        SendMessageW(s->cbA, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(nm.c_str()));
+                        SendMessageW(s->cbB, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(nm.c_str()));
+                    }
+                }
+                SendMessageW(s->cbA, CB_SETCURSEL, 0, 0);
+                SendMessageW(s->cbB, CB_SETCURSEL, s->roster && s->roster->size() > 1 ? 1 : 0, 0);
+                CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                    Scale(36), Scale(82), Scale(76), Scale(28), hw,
+                    reinterpret_cast<HMENU>(IDOK), GetModuleHandleW(nullptr), nullptr);
+                CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE,
+                    Scale(120), Scale(82), Scale(76), Scale(28), hw,
+                    reinterpret_cast<HMENU>(IDCANCEL), GetModuleHandleW(nullptr), nullptr);
+                return 0;
+            }
+            case WM_COMMAND:
+                if (LOWORD(wp) == IDOK) {
+                    wchar_t buf[256]{};
+                    const int ia = static_cast<int>(SendMessageW(s->cbA, CB_GETCURSEL, 0, 0));
+                    const int ib = static_cast<int>(SendMessageW(s->cbB, CB_GETCURSEL, 0, 0));
+                    SendMessageW(s->cbA, CB_GETLBTEXT, ia, reinterpret_cast<LPARAM>(buf));
+                    s->selA = buf;
+                    SendMessageW(s->cbB, CB_GETLBTEXT, ib, reinterpret_cast<LPARAM>(buf));
+                    s->selB = buf;
+                    if (s->selA == s->selB) {
+                        MessageBoxW(hw, L"Select two different students.", L"Rule",
+                                    MB_OK | MB_ICONWARNING);
+                        return 0;
+                    }
+                    s->ok = true;
+                    DestroyWindow(hw);
+                    return 0;
+                }
+                if (LOWORD(wp) == IDCANCEL) { DestroyWindow(hw); return 0; }
+                break;
+            case WM_CLOSE: DestroyWindow(hw); return 0;
+            }
+            return DefWindowProcW(hw, msg, wp, lp);
+        };
+        wc.hInstance     = GetModuleHandleW(nullptr);
+        wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = cls;
+        RegisterClassW(&wc);
+        reg = true;
+    }
+    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, cls, title.c_str(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, Scale(290), Scale(150),
+        hwnd_, nullptr, GetModuleHandleW(nullptr), &d);
+    if (!dlg) return false;
+    RECT pr{}, dr{};
+    GetWindowRect(hwnd_, &pr); GetWindowRect(dlg, &dr);
+    SetWindowPos(dlg, HWND_TOP,
+        pr.left + ((pr.right - pr.left) - (dr.right - dr.left)) / 2,
+        pr.top  + ((pr.bottom - pr.top) - (dr.bottom - dr.top)) / 2,
+        0, 0, SWP_NOSIZE);
+    EnableWindow(hwnd_, FALSE);
+    ShowWindow(dlg, SW_SHOW);
+    MSG m{};
+    while (IsWindow(dlg) && GetMessageW(&m, nullptr, 0, 0) > 0) {
+        TranslateMessage(&m); DispatchMessageW(&m);
+    }
+    EnableWindow(hwnd_, TRUE); SetActiveWindow(hwnd_);
+    if (!d.ok) return false;
+    nameA = d.selA; nameB = d.selB;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // RecalculateLayout — does NOT mutate layout item bounds on window resize
 // ---------------------------------------------------------------------------
 
@@ -1554,16 +2506,14 @@ void SeatingChartApp::RecalculateLayout() {
     const int maxPanel = Scale(kSidebarMaxWidth);
     if (sidebarWidth_ <= 0) sidebarWidth_ = PanelWidth();
     sidebarWidth_ = std::clamp(sidebarWidth_, minPanel, std::min(maxPanel, std::max(minPanel, cw - Margin())));
-    const int panelW = sidebarWidth_;
-    layout_.panel = { cw - panelW, 0, cw, ch };
+    const int panelW  = sidebarWidth_;
+    const int stripW  = classListBox_ ? Scale(kClassStripW) : 0;
+    layout_.panel = { cw - stripW - panelW, 0, cw - stripW, ch };
     layout_.chart = { Margin(), HeaderHeight(),
-                      std::max(Margin() + Scale(40), cw - panelW - Margin()),
+                      std::max(Margin() + Scale(40), cw - stripW - panelW - Margin()),
                       std::max(HeaderHeight() + Scale(40), ch - Margin()) };
 
-    // Recompute viewport transform — items are in stable room-local coords
-    // and never moved just because the window was resized.
     layoutTx_ = ComputeLayoutViewTransform(layout_.chart, state_.roomW, state_.roomH);
-
     SyncLayoutInspectorWithSelection(state_, controls_);
 
     if (controls_.sidebar) {
@@ -1573,6 +2523,14 @@ void SeatingChartApp::RecalculateLayout() {
                    layout_.panel.bottom - layout_.panel.top, TRUE);
         sidebar_.Recalculate(controls_.sidebar, state_, controls_, renderer_);
     }
+
+    // Class strip
+    if (classListBox_) {
+        const int btnH = Scale(28);
+        MoveWindow(classListBox_, cw - stripW, 0,         stripW, ch - btnH, TRUE);
+        MoveWindow(addClassBtn_,  cw - stripW, ch - btnH, stripW, btnH,     TRUE);
+    }
+
     LayoutFloatingTools();
     InvalidateChart();
 }
@@ -1582,7 +2540,8 @@ void SeatingChartApp::RecalculateLayout() {
 // ---------------------------------------------------------------------------
 
 LRESULT SeatingChartApp::OnCreate(HWND hwnd) {
-    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS};
+    INITCOMMONCONTROLSEX icc{sizeof(icc),
+        ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS | ICC_TAB_CLASSES | ICC_LISTVIEW_CLASSES};
     InitCommonControlsEx(&icc);
 
     hwnd_ = hwnd;
@@ -1605,27 +2564,43 @@ LRESULT SeatingChartApp::OnCreate(HWND hwnd) {
         SetWindowSubclass(controls_.rosterList, RosterListSubclassProc,
                           kRosterListSubclassId, reinterpret_cast<DWORD_PTR>(this));
 
+    // Class strip (narrow column on the far right of the window)
+    classListBox_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL,
+        0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kClassStripId)),
+        GetModuleHandleW(nullptr), nullptr);
+    addClassBtn_ = CreateWindowExW(0, L"BUTTON", L"+",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kAddClassBtnId)),
+        GetModuleHandleW(nullptr), nullptr);
+
     ApplyFontsToControls(controls_, renderer_);
+    ApplyThemeToListViews(); // set bg/text colours so selection is visible from the start
+    if (classListBox_) SendMessageW(classListBox_, WM_SETFONT,
+                                    reinterpret_cast<WPARAM>(renderer_.UiFont()), TRUE);
+    if (addClassBtn_)  SendMessageW(addClassBtn_,  WM_SETFONT,
+                                    reinterpret_cast<WPARAM>(renderer_.UiFont()), TRUE);
 
     state_.Init();
     bool loaded = LoadState(&state_);
     if (loaded) state_.ClearUndoHistory();
-    // SCAT1 deprecation warning
-    const auto legacyPath = GetLegacyStateFilePath();
-    const auto jsonPath = GetStateFilePath();
-    if (!jsonPath.empty() && !legacyPath.empty()) {
-        // If legacy exists and we might have used it (simple check: no JSON or old)
-        // For plan: always warn if legacy file still present
-        if (GetFileAttributesW(legacyPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            SetStatus(L"WARNING: Legacy SCAT1 state.txt detected. Re-save to migrate. Support will be removed in v9+.");
-            // One time message box
-            MessageBoxW(hwnd_, L"Legacy SCAT1 format detected.\n\nPlease use File > Save Now to migrate to JSON.\n\nSCAT1 support will be removed in a future release (planned v9).", L"SCAT1 Deprecation", MB_OK | MB_ICONWARNING);
+    // Auto-migrate: if legacy state.txt still exists, silently write JSON and delete it.
+    {
+        const auto legacyPath = GetLegacyStateFilePath();
+        if (!legacyPath.empty() &&
+            GetFileAttributesW(legacyPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            SaveStateNow(&state_, false); // ensure JSON is up-to-date
+            DeleteFileW(legacyPath.c_str()); // remove old format
         }
     }
     SyncAllEditsFromState();
+    SyncRosterView(state_, controls_);
+    SyncRulesLists(state_, controls_);
     RefreshSelectionFlags();
     UpdateButtonState(state_, controls_, false);
     SetStatus(L"Ready");
+    InitClassList();
+    SyncClassListBox();
 
     // Fit the window fully inside the monitor work area so every edge is
     // reachable for resizing. If it opens taller/wider than the screen, the
@@ -1655,10 +2630,41 @@ LRESULT SeatingChartApp::OnTimer(UINT_PTR id) {
     return 0;
 }
 
+// Apply app theme colours to all ListViews so selection is clearly visible
+// regardless of the Windows accent colour or dark-mode setting.
+void SeatingChartApp::ApplyThemeToListViews() {
+    const COLORREF bg  = renderer_.Theme().window;  // dark in dark mode, white in light
+    const COLORREF fg  = renderer_.Theme().text;
+    // Selection highlight — use the app's accent colour so it's always legible
+    const COLORREF sel = renderer_.Theme().accent;
+
+    auto applyLv = [&](HWND lv) {
+        if (!lv) return;
+        ListView_SetBkColor   (lv, bg);
+        ListView_SetTextColor (lv, fg);
+        ListView_SetTextBkColor(lv, bg);
+        // Tint the highlight: Windows uses the system colour by default, which can
+        // be invisible against dark backgrounds.  Setting it explicitly to the app
+        // accent makes selected rows pop in both light and dark mode.
+        // LVM_SETSELECTEDCOLUMN is not what we want; instead use the hot-track
+        // brush trick: paint header with accent for selection via custom draw, or
+        // simply keep the system colour and rely on LVS_SHOWSELALWAYS.
+        // For now set the bg/text; the system highlight will still show correctly
+        // because LVS_EX_FULLROWSELECT + LVS_SHOWSELALWAYS ensures it paints.
+        (void)sel;
+        RedrawWindow(lv, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE);
+    };
+    applyLv(controls_.rosterView);
+    applyLv(controls_.keepApartList);
+    applyLv(controls_.keepTogetherList);
+    applyLv(controls_.deskTagList);
+}
+
 LRESULT SeatingChartApp::OnThemeChange() {
     renderer_.ApplyThemeFromSystem();
     renderer_.RebuildFonts(dpi_);
     ApplyFontsToControls(controls_, renderer_);
+    ApplyThemeToListViews();
     UpdateButtonState(state_, controls_, aaRunning_);
     InvalidateChart();
     if (controls_.sidebar)
@@ -1672,6 +2678,7 @@ LRESULT SeatingChartApp::OnDpiChanged(UINT newDpi, const RECT* suggested) {
     // Layout items are now in DPI-independent room-local coordinates; no scaling needed.
     renderer_.RebuildFonts(dpi_);
     ApplyFontsToControls(controls_, renderer_);
+    ApplyThemeToListViews();
     if (suggested)
         SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
                      suggested->right - suggested->left, suggested->bottom - suggested->top,
@@ -1751,6 +2758,12 @@ LRESULT SeatingChartApp::OnKeyDown(WPARAM vk, bool ctrl, bool shift) {
         }
     }
     if (vk == VK_DELETE || vk == VK_BACK) {   // Backspace mirrors Delete
+        // Delete key while roster view has focus → remove selected students
+        if (controls_.rosterView && GetFocus() == controls_.rosterView &&
+            ListView_GetSelectedCount(controls_.rosterView) > 0) {
+            DeleteSelectedRosterStudents();
+            return 0;
+        }
         // Assign tool: Delete clears the focused seat's occupant.
         if (state_.chartMode == ChartMode::Seats && state_.selectedLayoutSeat) {
             const auto seat = *state_.selectedLayoutSeat;
@@ -1806,7 +2819,19 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
     case kAssignSelectedRosterId: if (notif==BN_CLICKED) AssignRosterSelectionToSeat(); break;
     case kBulkTagId:              if (notif==BN_CLICKED) BulkTagSelectedRoster(); break;
     case kClearAllSeatsId:        if (notif==BN_CLICKED) ClearAllSeats(); break;
-    case kApplyRulesId:           if (notif==BN_CLICKED) { const auto t = GetWindowTextStr(controls_.restrictionEdit); ApplyRestrictions(SplitRestrictionInput(t), SplitAffinityInput(t), SplitTogetherInput(t), SplitGroupInput(t)); } break;
+    case kApplyRulesId:           if (notif==BN_CLICKED) {
+                                      const auto desk = GetWindowTextStr(controls_.restrictionEdit);
+                                      const auto group = GetWindowTextStr(controls_.groupRulesEdit);
+                                      ApplyRestrictions(SplitRestrictionInput(desk),
+                                                        SplitAffinityInput(desk),
+                                                        SplitTogetherInput(desk),
+                                                        SplitGroupInput(group));
+                                  } break;
+    case kGroupRulesApplyId:      if (notif==BN_CLICKED) {
+                                      ApplyGroupRules(SplitGroupInput(GetWindowTextStr(controls_.groupRulesEdit)));
+                                  } break;
+    case kGroupResetId:           if (notif==BN_CLICKED) ResetGroupShuffleMemory(); break;
+    case kShowLastNamesId:        if (notif==BN_CLICKED) ToggleShowLastNames(); break;
     case kAddSmartboardId:        if (notif==BN_CLICKED) editor_.AddItem(LayoutItemType::Smartboard); break;
     case kAddTrapezoidId:         if (notif==BN_CLICKED) editor_.AddItem(LayoutItemType::TrapezoidDesk); break;
     case kAddDeskId:              if (notif==BN_CLICKED) editor_.AddItem(LayoutItemType::RectangleDesk); break;
@@ -1866,6 +2891,185 @@ LRESULT SeatingChartApp::OnCommand(int id, int notif) {
             RefreshFilteredRosterList();
             UpdateButtonState(state_, controls_, aaRunning_);
         }
+        break;
+    case kRosterViewId:
+        // NM_CLICK / NM_DBLCLK handled in WM_NOTIFY (HandleSidebarMessage) instead
+        break;
+    case kAddStudentId:
+        if (active && controls_.rosterView) {
+            // Ghost row already exists at the bottom — just scroll to it and start editing
+            CancelInlineCellEdit();
+            const int ghostIdx = static_cast<int>(state_.roster.size());
+            ListView_EnsureVisible(controls_.rosterView, ghostIdx, FALSE);
+            cellEdit_.isNew = true;
+            BeginInlineCellEdit(ghostIdx, 1);
+        }
+        break;
+    case kSaveStudentEditId:   break; // no longer used (cell edit commits on Enter/blur)
+    case kInlineFirstEditId:   break;
+    case kInlineLastEditId:    break;
+    case kRemoveStudentId:
+        if (active && controls_.rosterView) {
+            int sel = ListView_GetNextItem(controls_.rosterView, -1, LVNI_SELECTED);
+            if (sel >= 0 && sel < static_cast<int>(state_.roster.size())) {
+                const std::wstring removed = state_.roster[static_cast<size_t>(sel)];
+                AppState::Transaction tx(state_);
+                tx->roster.erase(tx->roster.begin() + sel);
+                for (auto& item : tx->layoutItems)
+                    for (auto& occ : item.occupants)
+                        if (CanonicalName(occ) == CanonicalName(removed)) occ.clear();
+                tx.Commit();
+                SyncRosterView(state_, controls_);
+                RefreshRosterList(state_, controls_);
+                RefreshGroupConfigList();
+                InvalidateChart();
+                SetStatus(L"Removed " + removed);
+                ScheduleSave();
+            }
+        }
+        break;
+    case kAddKeepApartId:
+        if (active) {
+            std::wstring a, b;
+            if (PromptRulePairDropdown(L"Add Keep Apart Rule", a, b)) {
+                Restriction r = NormalizeRestriction({a, b});
+                if (!CanonicalName(r.first).empty() && !CanonicalName(r.second).empty()) {
+                    AppState::Transaction tx(state_);
+                    const auto it = std::find_if(tx->restrictions.begin(), tx->restrictions.end(),
+                        [&](const Restriction& existing) { return RestrictionEquals(existing, r); });
+                    if (it == tx->restrictions.end()) tx->restrictions.push_back(r);
+                    tx.Commit();
+                    SyncRulesLists(state_, controls_);
+                    SyncRestrictionEditFromRules(state_, controls_);
+                    ScheduleSave();
+                }
+            }
+        }
+        break;
+    case kRemKeepApartId:
+        if (active && controls_.keepApartList) {
+            int sel = ListView_GetNextItem(controls_.keepApartList, -1, LVNI_SELECTED);
+            if (sel >= 0 && sel < static_cast<int>(state_.restrictions.size())) {
+                AppState::Transaction tx(state_);
+                tx->restrictions.erase(tx->restrictions.begin() + sel);
+                tx.Commit();
+                SyncRulesLists(state_, controls_);
+                SyncRestrictionEditFromRules(state_, controls_);
+                ScheduleSave();
+            }
+        }
+        break;
+    case kAddKeepTogetherId:
+        if (active) {
+            std::wstring a, b;
+            if (PromptRulePairDropdown(L"Add Keep Together Rule", a, b)) {
+                Restriction r = NormalizeRestriction({a, b});
+                if (!CanonicalName(r.first).empty() && !CanonicalName(r.second).empty()) {
+                    AppState::Transaction tx(state_);
+                    const auto it = std::find_if(tx->affinities.begin(), tx->affinities.end(),
+                        [&](const Restriction& existing) { return RestrictionEquals(existing, r); });
+                    if (it == tx->affinities.end()) tx->affinities.push_back(r);
+                    tx.Commit();
+                    SyncRulesLists(state_, controls_);
+                    SyncRestrictionEditFromRules(state_, controls_);
+                    ScheduleSave();
+                }
+            }
+        }
+        break;
+    case kRemKeepTogetherId:
+        if (active && controls_.keepTogetherList) {
+            int sel = ListView_GetNextItem(controls_.keepTogetherList, -1, LVNI_SELECTED);
+            if (sel >= 0 && sel < static_cast<int>(state_.affinities.size())) {
+                AppState::Transaction tx(state_);
+                tx->affinities.erase(tx->affinities.begin() + sel);
+                tx.Commit();
+                SyncRulesLists(state_, controls_);
+                SyncRestrictionEditFromRules(state_, controls_);
+                ScheduleSave();
+            }
+        }
+        break;
+    case kAddDeskTagRuleId:
+        if (active) {
+            std::wstring student, tag;
+            if (PromptRulePair(L"Add Desk Tag Rule", student, tag)) {
+                student = TrimCopy(student);
+                tag = TrimCopy(tag);
+                if (!student.empty() && !tag.empty()) {
+                    AppState::Transaction tx(state_);
+                    auto& tags = tx->StudentRecord(student).forbiddenDesks;
+                    if (std::find(tags.begin(), tags.end(), tag) == tags.end())
+                        tags.push_back(tag);
+                    tx.Commit();
+                    SyncRulesLists(state_, controls_);
+                    SetStatus(L"Added desk tag rule for " + student);
+                    ScheduleSave();
+                }
+            }
+        }
+        break;
+    case kRemDeskTagRuleId:
+        if (active && controls_.deskTagList) {
+            int sel = ListView_GetNextItem(controls_.deskTagList, -1, LVNI_SELECTED);
+            if (sel >= 0) {
+                int row = 0;
+                AppState::Transaction tx(state_);
+                bool removed = false;
+                for (const auto& name : tx->roster) {
+                    auto itInfo = tx->studentInfo.find(CanonicalName(name));
+                    if (itInfo == tx->studentInfo.end()) continue;
+                    auto& tags = itInfo->second.forbiddenDesks;
+                    for (auto it = tags.begin(); it != tags.end(); ++it, ++row) {
+                        if (row == sel) {
+                            tags.erase(it);
+                            removed = true;
+                            break;
+                        }
+                    }
+                    if (removed) break;
+                }
+                if (removed) {
+                    tx.Commit();
+                    SyncRulesLists(state_, controls_);
+                    ScheduleSave();
+                }
+            }
+        }
+        break;
+    case kGroupConfigListId:
+        if (notif == LBN_DBLCLK) ShuffleGroups();
+        break;
+    case kGroupSizeEditId:
+        if (notif == EN_CHANGE && controls_.groupSizeEdit) {
+            int v = GetDlgItemInt(controls_.sidebar, kGroupSizeEditId, nullptr, FALSE);
+            groupSizePref_ = std::clamp(v, 1, 99);
+            RefreshGroupConfigList();
+        }
+        break;
+    case kShuffleGroupsId:
+        if (active) ShuffleGroups();
+        break;
+    case kGroupSizeComboId:
+        if (notif == CBN_SELCHANGE && controls_.groupSizeCombo) {
+            const int idx = static_cast<int>(SendMessageW(controls_.groupSizeCombo, CB_GETCURSEL, 0, 0));
+            if (idx >= 0) {
+                wchar_t buf[16]{};
+                SendMessageW(controls_.groupSizeCombo, CB_GETLBTEXT, idx, reinterpret_cast<LPARAM>(buf));
+                const int k = _wtoi(buf);
+                if (k >= 2) { groupSizePref_ = k; }
+                RefreshGroupCombo(); // update the "or N" label
+            }
+        }
+        break;
+    case kClassStripId:
+        if (notif == LBN_SELCHANGE && classListBox_) {
+            const int sel = static_cast<int>(SendMessageW(classListBox_, LB_GETCURSEL, 0, 0));
+            SwitchToClass(sel);
+        }
+        break;
+    case kAddClassBtnId:
+        if (active) NewClass();
         break;
     }
     return 0;
@@ -2069,9 +3273,38 @@ void SeatingChartApp::StudentContextMenu(LayoutSeatRef seat, POINT screenAnchor)
     ScheduleSave();
 }
 
-LRESULT SeatingChartApp::OnContextMenu(POINT screenPt) {
+LRESULT SeatingChartApp::OnContextMenu(HWND source, POINT screenPt) {
     // Keyboard-invoked menus arrive as (-1,-1); fall back to the cursor.
     if (screenPt.x == -1 && screenPt.y == -1) GetCursorPos(&screenPt);
+
+    if (source == classListBox_ && classListBox_) {
+        POINT cp = screenPt;
+        ScreenToClient(classListBox_, &cp);
+        const DWORD hit = static_cast<DWORD>(SendMessageW(
+            classListBox_, LB_ITEMFROMPOINT, 0, MAKELPARAM(cp.x, cp.y)));
+        if (HIWORD(hit) != 0) return 0;
+        const int sel = static_cast<int>(LOWORD(hit));
+        if (sel >= 0 && sel < static_cast<int>(classList_.size())) {
+            SendMessageW(classListBox_, LB_SETCURSEL, sel, 0);
+            HMENU menu = CreatePopupMenu();
+            if (!menu) return 0;
+            AppendMenuW(menu, MF_STRING, 70001, L"Rename Class");
+            AppendMenuW(menu, MF_STRING, 70002, L"New Class");
+            const int id = static_cast<int>(TrackPopupMenu(
+                menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+                screenPt.x, screenPt.y, 0, hwnd_, nullptr));
+            DestroyMenu(menu);
+            if (id == 70001) {
+                std::wstring name = classList_[static_cast<size_t>(sel)].name;
+                if (PromptSingleText(L"Rename Class", L"Class name:", name)) {
+                    RenameClass(sel, name);
+                }
+            } else if (id == 70002) {
+                NewClass();
+            }
+        }
+        return 0;
+    }
 
     // Assign tool: right-clicking a seat edits that student's colour/tags.
     if (state_.chartMode == ChartMode::Seats) {
@@ -2303,6 +3536,114 @@ LRESULT SeatingChartApp::HandleSidebarMessage(HWND sidebar, UINT msg,
         sidebar_.HandleMouseWheel(sidebar, GET_WHEEL_DELTA_WPARAM(wParam),
                                    state_, controls_, renderer_);
         return 0;
+    case WM_NOTIFY: {
+        auto* hdr = reinterpret_cast<NMHDR*>(lParam);
+        if (hdr->idFrom == kTabControlId && hdr->code == TCN_SELCHANGE) {
+            const int tab = TabCtrl_GetCurSel(controls_.tabControl);
+            sidebar_.SetActiveTab(tab);
+            // Tab 2 (Arrange) → Layout mode; tabs 0/1 (Roster/Rules) → Assign mode
+            const ChartMode newMode = (tab == 2) ? ChartMode::Layout : ChartMode::Seats;
+            if (state_.chartMode != newMode) SetChartMode(newMode);
+            else sidebar_.Recalculate(controls_.sidebar, state_, controls_, renderer_);
+        } else if (hdr->idFrom == kRosterViewId &&
+                   (hdr->code == NM_CLICK || hdr->code == NM_DBLCLK)) {
+            auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lParam);
+            const int ghostIdx = static_cast<int>(state_.roster.size());
+
+            if (nm->iItem == ghostIdx && nm->iSubItem >= 1) {
+                // Clicked the ghost "add" row — start a new student immediately
+                // (single click is enough; no double-click needed for an empty row)
+                CancelInlineCellEdit();
+                cellEdit_.isNew = true;
+                BeginInlineCellEdit(ghostIdx, 1);
+            } else if (hdr->code == NM_DBLCLK &&
+                       nm->iItem >= 0 &&
+                       nm->iItem < ghostIdx &&
+                       nm->iSubItem >= 1) {
+                // Double-click an existing name cell → edit it
+                BeginInlineCellEdit(nm->iItem, nm->iSubItem);
+            }
+            // Single click on an existing row → just selects (native highlight)
+        } else if (hdr->idFrom == kRosterViewId && hdr->code == NM_RCLICK) {
+            // Right-click on the roster list → context menu
+            auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lParam);
+
+            // Count how many rows are selected
+            int selCount = ListView_GetSelectedCount(controls_.rosterView);
+
+            // If the click landed on an unselected row, select only that row
+            if (nm->iItem >= 0 && nm->iItem < static_cast<int>(state_.roster.size())) {
+                if (!(ListView_GetItemState(controls_.rosterView, nm->iItem, LVIS_SELECTED) & LVIS_SELECTED)) {
+                    // Clear previous selection and select just this row
+                    for (int i = ListView_GetItemCount(controls_.rosterView) - 1; i >= 0; --i)
+                        ListView_SetItemState(controls_.rosterView, i, 0, LVIS_SELECTED | LVIS_FOCUSED);
+                    ListView_SetItemState(controls_.rosterView, nm->iItem,
+                                          LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                    selCount = 1;
+                } else {
+                    selCount = ListView_GetSelectedCount(controls_.rosterView);
+                }
+            }
+
+            constexpr UINT kIdDelete    = 7001;
+            constexpr UINT kIdAddNew    = 7002;
+
+            HMENU menu = CreatePopupMenu();
+            if (selCount > 0) {
+                std::wstring label = selCount == 1
+                    ? L"Delete Student"
+                    : (L"Delete " + std::to_wstring(selCount) + L" Students");
+                AppendMenuW(menu, MF_STRING, kIdDelete, label.c_str());
+                AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            }
+            AppendMenuW(menu, MF_STRING, kIdAddNew, L"Add New Student");
+
+            POINT screenPt{}; GetCursorPos(&screenPt);
+            const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                                            screenPt.x, screenPt.y, 0, hwnd_, nullptr);
+            DestroyMenu(menu);
+
+            if (cmd == kIdDelete && selCount > 0) {
+                DeleteSelectedRosterStudents();
+            } else if (cmd == kIdAddNew) {
+                // Trigger inline add (same as the old "+Add" button)
+                SendMessageW(hwnd_, WM_COMMAND,
+                             MAKEWPARAM(kAddStudentId, BN_CLICKED), 0);
+            }
+        } else if (hdr->idFrom == kRosterViewId && hdr->code == NM_CUSTOMDRAW) {
+            auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
+            switch (cd->nmcd.dwDrawStage) {
+            case CDDS_PREPAINT:
+                return CDRF_NOTIFYITEMDRAW;
+            case CDDS_ITEMPREPAINT:
+                return CDRF_NOTIFYSUBITEMDRAW;
+            case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
+                if (cd->iSubItem == 0) {
+                    const int item = static_cast<int>(cd->nmcd.dwItemSpec);
+                    // cd->nmcd.rc for subitem 0 is the full-row rect (Win32 quirk) —
+                    // use GetSubItemRect to get the actual column 0 bounds.
+                    RECT rc{};
+                    ListView_GetSubItemRect(controls_.rosterView, item, 0, LVIR_LABEL, &rc);
+                    wchar_t buf[16]{};
+                    ListView_GetItemText(controls_.rosterView, item, 0, buf, 16);
+                    HFONT hFont = reinterpret_cast<HFONT>(
+                        SendMessageW(controls_.rosterView, WM_GETFONT, 0, 0));
+                    HFONT hOldFont = reinterpret_cast<HFONT>(
+                        SelectObject(cd->nmcd.hdc, hFont));
+                    SetTextColor(cd->nmcd.hdc, cd->clrText);
+                    SetBkMode(cd->nmcd.hdc, TRANSPARENT);
+                    DrawTextW(cd->nmcd.hdc, buf, -1, &rc,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    SelectObject(cd->nmcd.hdc, hOldFont);
+                    return CDRF_SKIPDEFAULT;
+                }
+                return CDRF_DODEFAULT;
+            default:
+                return CDRF_DODEFAULT;
+            }
+        }
+        return 0;
+    }
     case WM_COMMAND:
         return SendMessageW(hwnd_, WM_COMMAND, wParam, lParam);
     case WM_CTLCOLORSTATIC: {
@@ -2326,7 +3667,7 @@ LRESULT SeatingChartApp::HandleSidebarMessage(HWND sidebar, UINT msg,
         HDC hdc = BeginPaint(sidebar, &ps);
         renderer_.PaintInfoPanel(hdc, sidebar, layout_,
                                   sidebar_.ScrollOffset(), sidebar_.SectionDividers(),
-                                  sidebar_.HeaderH(), sidebar_.StatusH());
+                                  sidebar_.TotalHeaderH(), sidebar_.StatusH());
         EndPaint(sidebar, &ps);
         return 0;
     }
@@ -2413,7 +3754,7 @@ LRESULT SeatingChartApp::HandleMessage(HWND hwnd, UINT msg,
         if (rubberBandSelecting_) { rubberBandSelecting_ = false; InvalidateChart(); }
         editor_.CancelEdit(/*doRelease=*/false);
         return 0;
-    case WM_CONTEXTMENU:   return OnContextMenu(
+    case WM_CONTEXTMENU:   return OnContextMenu(reinterpret_cast<HWND>(wParam),
                                {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)});
     case WM_SETCURSOR:     return OnSetCursor(lParam);
     case WM_CTLCOLORSTATIC: {

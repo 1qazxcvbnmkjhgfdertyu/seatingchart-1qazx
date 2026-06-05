@@ -1,6 +1,7 @@
 #include "SidebarManager.h"
 #include "Utils.h"
 #include <algorithm>
+#include <commctrl.h>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -20,8 +21,9 @@ void SidebarManager::DeferFixed(HDWP& dwp, HWND child, int x, int y, int w, int 
 void SidebarManager::Defer(HDWP& dwp, HWND child, int x, int y, int w, int h) {
     if (!child || !dwp) return;
     if (viewH_ > buttonH_) { // scrollable region is meaningful
-        const int scrollBot = headerH_ + viewH_;
-        if (y < headerH_ || y + h > scrollBot) {
+        const int scrollBand = headerH_ + tabH_; // content starts below header + tab strip
+        const int scrollBot  = scrollBand + viewH_;
+        if (y < scrollBand || y + h > scrollBot) {
             // Move above parent top edge — invisible, but never destroyed.
             dwp = DeferWindowPos(dwp, child, nullptr, x, -(h + 4), w, h,
                                  SWP_NOZORDER | SWP_NOACTIVATE);
@@ -40,8 +42,9 @@ void SidebarManager::RebuildMetrics(HWND sidebar, const Renderer& renderer) {
     buttonH_ = m.buttonH;
     editH_ = m.editH;
     sectionGap_ = m.sectionGap;
-    headerH_ = std::max(lineH_ * 5 + gap_ * 3, Scale(96));
-    statusH_ = std::max(lineH_ * 3 + gap_ * 2, Scale(54));
+    headerH_    = std::max(lineH_ * 5 + gap_ * 3, Scale(96));
+    tabH_       = std::max(lineH_ + Scale(10), Scale(28)); // tab strip row height
+    statusH_    = std::max(lineH_ * 3 + gap_ * 2, Scale(54));
     scrollLine_ = buttonH_ + gap_;
 }
 
@@ -62,185 +65,263 @@ void SidebarManager::ClampScroll(HWND sidebar) {
 }
 
 // ---------------------------------------------------------------------------
-// LayoutCommonStrip — mode buttons, capture/print, templates
-// (called first in both seat and layout modes)
+// PlaceButtons — shared button-grid helper for all three panel functions
+// ---------------------------------------------------------------------------
+void SidebarManager::PlaceButtons(HDWP& dwp, std::initializer_list<HWND> hs,
+                                   int px, int pw, int& y, int minW) {
+    const int count = static_cast<int>(hs.size());
+    if (count <= 0) return;
+    const int cols = std::max(1, std::min(count, std::max(1, (pw + gap_) / (minW + gap_))));
+    const int cw   = std::max(1, (pw - gap_ * (cols - 1)) / cols);
+    int col = 0;
+    for (HWND h : hs) {
+        Defer(dwp, h, px + col * (cw + gap_), y,
+              col == cols - 1 ? pw - col * (cw + gap_) : cw, buttonH_);
+        if (++col == cols) { col = 0; y += buttonH_ + gap_; }
+    }
+    if (col != 0) y += buttonH_ + gap_;
+}
+
+// ---------------------------------------------------------------------------
+// LayoutRosterPanel  (tab 0)
 // ---------------------------------------------------------------------------
 
-int SidebarManager::LayoutCommonStrip(HDWP& dwp, const ControlHandles& c,
+int SidebarManager::LayoutRosterPanel(HDWP& dwp, const ControlHandles& c,
                                        int px, int pw, int base, int scrollUsed) {
     int y = base;
     auto rec = [&](int absY) { sectionDividers_.push_back(absY + scrollUsed); };
-    auto buttons = [&](std::initializer_list<HWND> hs, int minW) {
-        const int count = static_cast<int>(hs.size());
-        if (count <= 0) return;
-        const int cols = std::max(1, std::min(count, std::max(1, (pw + gap_) / (minW + gap_))));
-        const int cw = std::max(1, (pw - gap_ * (cols - 1)) / cols);
-        int col = 0;
-        for (HWND h : hs) {
-            Defer(dwp, h, px + col * (cw + gap_), y,
-                  col == cols - 1 ? pw - col * (cw + gap_) : cw, buttonH_);
-            if (++col == cols) {
-                col = 0;
-                y += buttonH_ + gap_;
-            }
-        }
-        if (col != 0) y += buttonH_ + gap_;
-    };
 
-    // Mode is switched via the Arrange/Assign menu items — no sidebar buttons needed.
-
-    return y;
-}
-
-// ---------------------------------------------------------------------------
-// Sub-layout: Seats mode
-// ---------------------------------------------------------------------------
-
-int SidebarManager::LayoutSeatsModePanel(HDWP& dwp, const ControlHandles& c,
-                                          int px, int pw, int base, int scrollUsed) {
-    int y = base;
-    auto rec = [&](int absY) { sectionDividers_.push_back(absY + scrollUsed); };
-    auto buttons = [&](std::initializer_list<HWND> hs, int minW) {
-        const int count = static_cast<int>(hs.size());
-        if (count <= 0) return;
-        const int cols = std::max(1, std::min(count, std::max(1, (pw + gap_) / (minW + gap_))));
-        const int cw = std::max(1, (pw - gap_ * (cols - 1)) / cols);
-        int col = 0;
-        for (HWND h : hs) {
-            Defer(dwp, h, px + col * (cw + gap_), y,
-                  col == cols - 1 ? pw - col * (cw + gap_) : cw, buttonH_);
-            if (++col == cols) {
-                col = 0;
-                y += buttonH_ + gap_;
-            }
-        }
-        if (col != 0) y += buttonH_ + gap_;
-    };
-
-    // Assign tool: double-click a seat on the chart to place a student. This
-    // panel holds the roster, restrictions and auto-fill tools. (The old
-    // rows×cols grid and per-seat manual override are gone — furniture owns
-    // the seats now; those controls are hidden by UpdateControlVisibility.)
-
+    // Two-column student ListView — fills most of the panel
     rec(y);
-    // Roster input
-    Defer(dwp, c.rosterLabel,  px, y, pw, labelH_); y += labelH_ + gap_;
-    const int rosterEditH = std::max(lineH_ * 5, Scale(76));
-    Defer(dwp, c.rosterEdit,   px, y, pw, rosterEditH); y += rosterEditH + gap_;
-    buttons({c.importRoster, c.loadRoster, c.saveNow}, Scale(92));
-    buttons({c.autoAssign, c.quickFillSeats}, Scale(122));
-    buttons({c.clearAllSeats}, Scale(142));
+    const int listH = std::max(lineH_ * 8, viewH_ - Scale(160));
+    Defer(dwp, c.rosterView, px, y, pw, std::max(Scale(60), listH)); y += std::max(Scale(60), listH) + gap_;
+
+    // Show last names toggle
+    PlaceButtons(dwp, {c.showLastNamesBtn}, px, pw, y, Scale(110));
     y += sectionGap_;
 
+    // Import / Load / Save
     rec(y);
-    // Roster filter + list
-    Defer(dwp, c.rosterFilter,         px, y, pw, editH_); y += editH_ + gap_;
-    Defer(dwp, c.rosterListLabel,      px, y, pw, labelH_); y += labelH_ + gap_;
-    const int listH = std::max(lineH_ * 7, Scale(96));
-    Defer(dwp, c.rosterList,           px, y, pw, listH); y += listH + gap_;
-    buttons({c.assignSelectedRoster, c.bulkTag}, Scale(126));
+    PlaceButtons(dwp, {c.importRoster, c.loadRoster, c.saveNow}, px, pw, y, Scale(80));
     y += sectionGap_;
 
-    rec(y);
-    // Restrictions
-    Defer(dwp, c.restrictionLabel, px, y, pw, labelH_ * 2); y += labelH_ * 2 + gap_;
-    const int rulesH = std::max(lineH_ * 4, Scale(68));
-    Defer(dwp, c.restrictionEdit,  px, y, pw, rulesH); y += rulesH + gap_;
-    buttons({c.applyRules}, Scale(140));
+    // Auto-assign / Clear
+    PlaceButtons(dwp, {c.autoAssign, c.clearAllSeats}, px, pw, y, Scale(120));
+    y += sectionGap_;
+
+    // Roster list assignment helper
+    Defer(dwp, c.rosterListLabel, px, y, pw, labelH_); y += labelH_ + gap_;
+    const int smallListH = std::max(lineH_ * 4, Scale(64));
+    Defer(dwp, c.rosterList, px, y, pw, smallListH); y += smallListH + gap_;
+    PlaceButtons(dwp, {c.assignSelectedRoster, c.bulkTag}, px, pw, y, Scale(100));
     y += sectionGap_;
 
     return y;
 }
 
 // ---------------------------------------------------------------------------
-// Sub-layout: Layout mode
+// LayoutRulesPanel  (tab 1)
 // ---------------------------------------------------------------------------
 
-int SidebarManager::LayoutLayoutModePanel(HDWP& dwp, const ControlHandles& c,
-                                           int px, int pw, int base, int scrollUsed) {
+int SidebarManager::LayoutRulesPanel(HDWP& dwp, const ControlHandles& c,
+                                      int px, int pw, int base, int scrollUsed) {
     int y = base;
     auto rec = [&](int absY) { sectionDividers_.push_back(absY + scrollUsed); };
-    auto buttons = [&](std::initializer_list<HWND> hs, int minW) {
-        const int count = static_cast<int>(hs.size());
-        if (count <= 0) return;
-        const int cols = std::max(1, std::min(count, std::max(1, (pw + gap_) / (minW + gap_))));
-        const int cw = std::max(1, (pw - gap_ * (cols - 1)) / cols);
-        int col = 0;
-        for (HWND h : hs) {
-            Defer(dwp, h, px + col * (cw + gap_), y,
-                  col == cols - 1 ? pw - col * (cw + gap_) : cw, buttonH_);
-            if (++col == cols) {
-                col = 0;
-                y += buttonH_ + gap_;
-            }
-        }
-        if (col != 0) y += buttonH_ + gap_;
-    };
-    auto labelEdit = [&](HWND label, HWND edit, int labelMinW = Scale(54)) {
-        if (pw < Scale(210)) {
-            Defer(dwp, label, px, y, pw, labelH_);
-            y += labelH_;
-            Defer(dwp, edit, px, y, pw, editH_);
-            y += editH_ + gap_;
-            return;
-        }
-        const int lw = std::min(std::max(labelMinW, pw / 4), Scale(86));
-        Defer(dwp, label, px, y, lw, editH_);
-        Defer(dwp, edit, px + lw + gap_, y, pw - lw - gap_, editH_);
-        y += editH_ + gap_;
-    };
+    const int pairListH = std::max(lineH_ * 4, Scale(60));
 
-    // Direct manipulation remains primary, but the grouped sidebar keeps common
-    // arrangement and inspector actions visible for discoverability.
+    // Keep Apart section
+    rec(y);
+    Defer(dwp, c.keepApartHeader, px, y, pw, labelH_); y += labelH_ + gap_;
+    Defer(dwp, c.keepApartDesc,   px, y, pw, labelH_); y += labelH_ + gap_;
+    Defer(dwp, c.keepApartList,   px, y, pw, pairListH); y += pairListH + gap_;
+    PlaceButtons(dwp, {c.addKeepApartBtn, c.remKeepApartBtn}, px, pw, y, Scale(80));
+    y += sectionGap_;
 
-    // --- Add furniture ---
+    // Keep Together section
+    rec(y);
+    Defer(dwp, c.keepTogetherHeader, px, y, pw, labelH_); y += labelH_ + gap_;
+    Defer(dwp, c.keepTogetherDesc,   px, y, pw, labelH_); y += labelH_ + gap_;
+    Defer(dwp, c.keepTogetherList,   px, y, pw, pairListH); y += pairListH + gap_;
+    PlaceButtons(dwp, {c.addKeepTogetherBtn, c.remKeepTogetherBtn}, px, pw, y, Scale(80));
+    y += sectionGap_;
+
+    // Desk Tag Rules placeholder
+    rec(y);
+    Defer(dwp, c.deskTagHeader, px, y, pw, labelH_); y += labelH_ + gap_;
+    Defer(dwp, c.deskTagDesc,   px, y, pw, labelH_ * 2); y += labelH_ * 2 + gap_;
+    Defer(dwp, c.deskTagList,   px, y, pw, pairListH); y += pairListH + gap_;
+    PlaceButtons(dwp, {c.addDeskTagRuleBtn, c.remDeskTagRuleBtn}, px, pw, y, Scale(92));
+    y += sectionGap_;
+
+    return y;
+}
+
+// ---------------------------------------------------------------------------
+// LayoutArrangePanel  (tab 2)
+// ---------------------------------------------------------------------------
+
+int SidebarManager::LayoutArrangePanel(HDWP& dwp, const ControlHandles& c,
+                                        int px, int pw, int base, int scrollUsed) {
+    int y = base;
+    auto rec = [&](int absY) { sectionDividers_.push_back(absY + scrollUsed); };
+
     rec(y);
     Defer(dwp, c.layoutToolsLabel, px, y, pw, labelH_); y += labelH_ + gap_;
-    buttons({c.addSmartboard, c.addTrap, c.addDesk}, Scale(88));
-    buttons({c.addTable, c.addBigTable, c.addBlock}, Scale(88));
-    // Trapezoid collaborative pods — two half-width buttons (longer labels).
-    buttons({c.addTrapPair, c.addTrapPod}, Scale(126));
+    PlaceButtons(dwp, {c.addSmartboard, c.addTrap, c.addDesk},   px, pw, y, Scale(80));
+    PlaceButtons(dwp, {c.addTable, c.addBigTable, c.addBlock},   px, pw, y, Scale(80));
+    PlaceButtons(dwp, {c.addTrapPair, c.addTrapPod},             px, pw, y, Scale(110));
     y += sectionGap_;
 
-    // --- Selection (acts on the item(s) selected on the canvas) ---
     rec(y);
     Defer(dwp, c.layoutTransformLabel, px, y, pw, labelH_); y += labelH_ + gap_;
-    buttons({c.deleteLayout, c.duplicateLayoutItem, c.lockItem}, Scale(88));
-    buttons({c.rotateCW, c.rotateCCW, c.flipH}, Scale(88));
-    buttons({c.selectAllLayout, c.toggleVisible}, Scale(126));
-    buttons({c.sendLayoutBack, c.bringLayoutFront}, Scale(126));
+    PlaceButtons(dwp, {c.deleteLayout, c.duplicateLayoutItem, c.lockItem}, px, pw, y, Scale(80));
+    PlaceButtons(dwp, {c.rotateCW, c.rotateCCW, c.flipH},                 px, pw, y, Scale(80));
+    PlaceButtons(dwp, {c.selectAllLayout, c.toggleVisible},               px, pw, y, Scale(100));
+    PlaceButtons(dwp, {c.sendLayoutBack, c.bringLayoutFront},             px, pw, y, Scale(100));
+    y += sectionGap_;
+
+    rec(y);
+    PlaceButtons(dwp, {c.quickFillSeats}, px, pw, y, Scale(120));
     y += sectionGap_;
 
     return y;
 }
 
 // ---------------------------------------------------------------------------
-// UpdateControlVisibility
+// LayoutGroupsPanel  (tab 3)
 // ---------------------------------------------------------------------------
 
-void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode mode) {
-    const int sv = (mode == ChartMode::Seats)  ? SW_SHOW : SW_HIDE;
-    const int lv = (mode == ChartMode::Layout) ? SW_SHOW : SW_HIDE;
+int SidebarManager::LayoutGroupsPanel(HDWP& dwp, const ControlHandles& c,
+                                       int px, int pw, int base, int scrollUsed) {
+    int y = base;
+    auto rec = [&](int absY) { sectionDividers_.push_back(absY + scrollUsed); };
 
-    // Assign-tool panel (formerly Seats mode): roster, auto-fill, restrictions.
-    for (HWND h : {c.rosterLabel, c.rosterEdit, c.importRoster, c.loadRoster, c.saveNow,
-                   c.autoAssign, c.quickFillSeats, c.clearAllSeats,
-                   c.rosterFilter, c.rosterListLabel, c.rosterList, c.assignSelectedRoster, c.bulkTag,
-                   c.restrictionLabel, c.restrictionEdit, c.applyRules})
-        if (h) ShowWindow(h, sv);
+    rec(y);
+    // "Groups of: [combo]  or [label]"
+    const int comboLblW = Scale(62);
+    const int comboW    = Scale(52);
+    const int orLblW    = Scale(24);
+    const int orValW    = Scale(40);
+    Defer(dwp, c.groupSizeLabel,  px,                              y, comboLblW, buttonH_);
+    Defer(dwp, c.groupSizeCombo,  px + comboLblW + gap_,           y, comboW,    buttonH_);
+    Defer(dwp, c.groupOrLabel,    px + comboLblW + gap_ + comboW + gap_, y, orLblW, buttonH_);
+    Defer(dwp, c.groupOrValLabel, px + comboLblW + gap_ + comboW + gap_ + orLblW + gap_, y,
+          std::max(4, pw - comboLblW - comboW - orLblW - gap_ * 4), buttonH_);
+    y += buttonH_ + gap_ + sectionGap_;
 
-    // Layout-only (the simplified, always-visible-in-layout-mode panel)
+    // Shuffle and output
+    rec(y);
+    PlaceButtons(dwp, {c.shuffleGroupsBtn, c.groupResetBtn}, px, pw, y, Scale(100));
+    y += sectionGap_;
+
+    // Output list
+    const int outH = std::max(Scale(80), (viewH_ - (y - base)) / 2);
+    Defer(dwp, c.groupsOutputList, px, y, pw, outH); y += outH + gap_ + sectionGap_;
+
+    // Group rules section
+    rec(y);
+    Defer(dwp, c.groupRulesLabel, px, y, pw, labelH_); y += labelH_ + gap_;
+    const int rulesH = std::max(Scale(60), viewH_ - (y - base) - buttonH_ - gap_ * 2);
+    Defer(dwp, c.groupRulesEdit, px, y, pw, rulesH); y += rulesH + gap_;
+    PlaceButtons(dwp, {c.groupRulesApply}, px, pw, y, Scale(100));
+    y += sectionGap_;
+
+    return y;
+}
+
+// ---------------------------------------------------------------------------
+// ResizeListViewColumns — call after panel layout to auto-size Last Name col
+// ---------------------------------------------------------------------------
+
+void SidebarManager::ResizeListViewColumns(const ControlHandles& c, int /*panelWidth*/) const {
+    // Use the ListView's own client rect so column totals never exceed it,
+    // which prevents the horizontal scrollbar from appearing.
+    auto clientW = [](HWND lv) -> int {
+        if (!lv) return 0;
+        RECT rc{}; GetClientRect(lv, &rc);
+        return std::max(1, static_cast<int>(rc.right - rc.left));
+    };
+
+    if (c.rosterView) {
+        const int avail = clientW(c.rosterView);
+        const int numW  = Scale(28);
+        const int nameW = std::max(Scale(50), (avail - numW) / 2);
+        ListView_SetColumnWidth(c.rosterView, 0, numW);
+        ListView_SetColumnWidth(c.rosterView, 1, nameW);
+        ListView_SetColumnWidth(c.rosterView, 2, avail - numW - nameW);
+    }
+
+    auto resizePair = [&](HWND lv) {
+        if (!lv) return;
+        const int avail = clientW(lv);
+        const int colW  = std::max(Scale(60), avail / 2);
+        ListView_SetColumnWidth(lv, 0, colW);
+        ListView_SetColumnWidth(lv, 1, avail - colW);
+    };
+    resizePair(c.keepApartList);
+    resizePair(c.keepTogetherList);
+    resizePair(c.deskTagList);
+}
+
+// ---------------------------------------------------------------------------
+// UpdateControlVisibility — tab-based: show only the active tab's controls
+// ---------------------------------------------------------------------------
+
+void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode /*mode*/) {
+    const bool onRoster  = (activeTab_ == 0);
+    const bool onRules   = (activeTab_ == 1);
+    const bool onArrange = (activeTab_ == 2);
+    const bool onGroups  = (activeTab_ == 3);
+
+    // Roster tab
+    for (HWND h : {c.rosterView,
+                   c.importRoster, c.loadRoster, c.saveNow,
+                   c.autoAssign, c.clearAllSeats,
+                   c.rosterListLabel, c.rosterList,
+                   c.assignSelectedRoster, c.bulkTag,
+                   c.showLastNamesBtn})
+        if (h) ShowWindow(h, onRoster ? SW_SHOW : SW_HIDE);
+
+    // Rules tab
+    for (HWND h : {c.keepApartHeader, c.keepApartDesc, c.keepApartList,
+                   c.addKeepApartBtn, c.remKeepApartBtn,
+                   c.keepTogetherHeader, c.keepTogetherDesc, c.keepTogetherList,
+                   c.addKeepTogetherBtn, c.remKeepTogetherBtn,
+                   c.deskTagHeader, c.deskTagDesc, c.deskTagList,
+                   c.addDeskTagRuleBtn, c.remDeskTagRuleBtn})
+        if (h) ShowWindow(h, onRules ? SW_SHOW : SW_HIDE);
+
+    // Arrange tab
     for (HWND h : {c.layoutToolsLabel, c.addSmartboard, c.addTrap, c.addDesk,
                    c.addTable, c.addBigTable, c.addBlock, c.addTrapPair, c.addTrapPod,
                    c.layoutTransformLabel, c.deleteLayout, c.duplicateLayoutItem, c.lockItem,
                    c.rotateCW, c.rotateCCW, c.flipH, c.selectAllLayout,
-                   c.toggleVisible, c.sendLayoutBack, c.bringLayoutFront})
-        if (h) ShowWindow(h, lv);
+                   c.toggleVisible, c.sendLayoutBack, c.bringLayoutFront,
+                   c.quickFillSeats})
+        if (h) ShowWindow(h, onArrange ? SW_SHOW : SW_HIDE);
 
-    // Merge is intentionally disabled while the grouping/copy workflows cover
-    // the common teacher need without creating confusing synthetic furniture.
-    for (HWND h : {c.captureChart, c.exportChart, c.printChart, c.exportCsv,
+    // Groups tab
+    for (HWND h : {c.groupSizeLabel, c.groupSizeCombo, c.groupOrLabel, c.groupOrValLabel,
+                   c.shuffleGroupsBtn, c.groupResetBtn, c.groupsOutputList,
+                   c.groupRulesLabel, c.groupRulesEdit, c.groupRulesApply})
+        if (h) ShowWindow(h, onGroups ? SW_SHOW : SW_HIDE);
+
+    // Always hidden — old text-box controls replaced by structured UI
+    for (HWND h : {c.rosterEdit, c.rosterFilter, c.restrictionEdit, c.applyRules,
+                   c.rosterLabel,
+                   // Add/Remove buttons replaced by right-click context menu
+                   c.addStudentBtn, c.removeStudentBtn,
+                   // Bottom edit fields replaced by true inline cell editing
+                   c.inlineFirstEdit, c.inlineLastEdit, c.saveStudentEdit,
+                   // Export/template buttons removed from Arrange tab (still in File menu)
+                   c.captureChart, c.exportChart, c.printChart, c.exportCsv,
                    c.seatingReport, c.exportHtml, c.saveTemplateBtn, c.loadTemplateBtn,
+                   // Old groups size spinner replaced by combobox
+                   c.groupSizeEdit, c.groupSizeSpin, c.groupConfigList})
+        if (h) ShowWindow(h, SW_HIDE);
+
+    // Always hidden — retired sidebar controls
+    for (HWND h : {c.modeLabel, c.seatMode, c.layoutMode,
                    c.mergeSelected,
                    c.alignLabel, c.alignLeft, c.alignRight, c.alignTop, c.alignBottom,
                    c.alignCenterH, c.alignCenterV, c.distributeH, c.distributeV,
@@ -254,10 +335,6 @@ void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode 
                    c.roomHeightLabel, c.roomHeightEdit, c.applyRoomSize,
                    c.frontEdgeLabel, c.frontEdgeButton})
         if (h) ShowWindow(h, SW_HIDE);
-
-    // Mode buttons no longer live in the sidebar; keep them hidden always.
-    for (HWND h : {c.modeLabel, c.seatMode, c.layoutMode})
-        if (h) ShowWindow(h, SW_HIDE);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,55 +346,71 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
     RebuildMetrics(sidebar, renderer);
     RECT rc{}; GetClientRect(sidebar, &rc);
 
-    const int padding   = pad_;
-    // headerH increased from Scale(88) → Scale(104) to accommodate the
-    // two-line summary label (ISTE 1.4: at-a-glance stats, not a single
-    // truncated horizontal line).
-    const int headerH   = headerH_;
-    const int statusH   = statusH_;
-    const int scrollTop = headerH;
+    const int padding = pad_;
+    const int pw = std::max(1, static_cast<int>(rc.right - rc.left) - padding * 2);
+    const int px = padding;
+    const int statusH = statusH_;
+
+    // Sync active tab with the canvas mode when mode changes externally.
+    // Tab 3 (Groups) is mode-neutral — don't override it.
+    if (activeTab_ != 3) {
+        if (state.chartMode == ChartMode::Layout) {
+            activeTab_ = 2;
+        } else if (activeTab_ == 2) {
+            activeTab_ = 0;
+        }
+    }
+    if (c.tabControl) TabCtrl_SetCurSel(c.tabControl, activeTab_);
+
+    // Fixed zones (not scrolled):
+    //   [0 .. headerH_)         — title + summary
+    //   [headerH_ .. headerH_+tabH_) — tab strip
+    //   [headerH_+tabH_ .. scrollBot) — scrollable content
+    //   [scrollBot .. rc.bottom)     — status
+    const int scrollTop = headerH_ + tabH_;
     const int scrollBot = std::max(scrollTop + buttonH_ + gap_,
                                    static_cast<int>(rc.bottom) - statusH);
     const int viewH     = std::max(1, scrollBot - scrollTop);
 
-    // Set viewH_ early so Defer()'s bounds check is live before layout functions run.
-    viewH_ = viewH;
+    viewH_ = viewH; // set before Defer() is called
 
     scroll_ = std::clamp(scroll_, 0, std::max(0, contentH_ - viewH));
-    const int pw       = std::max(1, static_cast<int>(rc.right - rc.left) - padding * 2);
-    const int px       = padding;
-    const int base     = scrollTop + padding - scroll_;
+    const int base       = scrollTop + padding - scroll_;
     const int scrollUsed = scroll_;
 
     sectionDividers_.clear();
 
-    HDWP dwp = BeginDeferWindowPos(130);
+    HDWP dwp = BeginDeferWindowPos(100);
 
-    // Fixed header and footer — use DeferFixed to bypass the scrollable-region clamp.
-    DeferFixed(dwp, c.titleLabel,   padding, padding,                        pw, lineH_ * 2);
-    DeferFixed(dwp, c.summaryLabel, padding, padding + lineH_ * 2 + gap_,    pw, lineH_ * 3);
+    // Fixed: title, summary, status — bypass scrollable-region clamp
+    DeferFixed(dwp, c.titleLabel,   padding, padding,                     pw, lineH_ * 2);
+    DeferFixed(dwp, c.summaryLabel, padding, padding + lineH_ * 2 + gap_, pw, lineH_ * 3);
     DeferFixed(dwp, c.statusLabel,  padding,
                std::max(padding, static_cast<int>(rc.bottom) - statusH + gap_),
                pw, lineH_ * 2 + gap_);
 
-    // Common strip (mode buttons, capture/print, templates) — always visible, scrolled
-    int y = LayoutCommonStrip(dwp, c, px, pw, base, scrollUsed);
+    // Fixed: tab control spans the full panel width, flush below the header
+    DeferFixed(dwp, c.tabControl, 0, headerH_,
+               static_cast<int>(rc.right - rc.left), tabH_);
 
-    // Mode-specific content
-    int contentBottom = 0;
-    if (state.chartMode == ChartMode::Seats)
-        contentBottom = LayoutSeatsModePanel(dwp, c, px, pw, y, scrollUsed);
-    else
-        contentBottom = LayoutLayoutModePanel(dwp, c, px, pw, y, scrollUsed);
+    // Scrollable tab content
+    int contentBottom = base;
+    switch (activeTab_) {
+    case 0: contentBottom = LayoutRosterPanel (dwp, c, px, pw, base, scrollUsed); break;
+    case 1: contentBottom = LayoutRulesPanel  (dwp, c, px, pw, base, scrollUsed); break;
+    case 2: contentBottom = LayoutArrangePanel(dwp, c, px, pw, base, scrollUsed); break;
+    case 3: contentBottom = LayoutGroupsPanel (dwp, c, px, pw, base, scrollUsed); break;
+    }
 
     UpdateControlVisibility(c, state.chartMode);
 
     if (dwp) EndDeferWindowPos(dwp);
 
-    // Keep the fixed header/status bands above the scrolled content so they stay
-    // readable and the content appears clipped behind them (rather than the
-    // scrolled controls painting over the title/summary/status text).
-    for (HWND h : {c.titleLabel, c.summaryLabel, c.statusLabel})
+    // Auto-resize ListView columns to fit available width
+    ResizeListViewColumns(c, static_cast<int>(rc.right - rc.left));
+
+    // Fixed elements always on top
+    for (HWND h : {c.titleLabel, c.summaryLabel, c.statusLabel, c.tabControl})
         if (h) SetWindowPos(h, HWND_TOP, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 

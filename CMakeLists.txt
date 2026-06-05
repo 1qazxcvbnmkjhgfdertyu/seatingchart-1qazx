@@ -62,6 +62,16 @@ target_link_libraries(seating_chart_app PRIVATE
     nlohmann_json
 )
 
+# Copy bundled fonts next to the executable after each build
+add_custom_command(TARGET seating_chart_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:seating_chart_app>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/fonts/Baloo2.ttf"
+            "$<TARGET_FILE_DIR:seating_chart_app>/fonts/Baloo2.ttf"
+    COMMENT "Copying bundled fonts to output directory"
+)
+
 if(MINGW)
     # -municode: wWinMain entry point.
     # -static*: bake the C++ runtime (libc++/libunwind/pthread) into the exe so

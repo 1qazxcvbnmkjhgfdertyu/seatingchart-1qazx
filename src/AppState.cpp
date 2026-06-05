@@ -20,6 +20,7 @@ void AppState::Init() {
     chartMode = ChartMode::Layout;   // unified chart opens in the Arrange tool
     dirty  = false;
     status = L"Ready";
+    showLastNames = true;
     ClearUndoHistory();
 }
 

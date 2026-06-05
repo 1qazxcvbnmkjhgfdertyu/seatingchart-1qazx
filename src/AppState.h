@@ -83,7 +83,9 @@ public:
     RoomEdge     frontEdge = RoomEdge::Top;          // which room edge is "the front"
     ChartMode    chartMode = ChartMode::Seats;
     bool         dirty     = false;
+    std::wstring className = L"Class 1";
     std::wstring status    = L"Ready";
+    bool         showLastNames = true;               // when true, display full names everywhere
 
     // New lightweight undo system (Phase 1 foundation work)
     UndoManager undoManager;

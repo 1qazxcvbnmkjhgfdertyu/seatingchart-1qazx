@@ -135,11 +135,11 @@ void Renderer::RebuildResources() {
     res_.gridPen = CreatePen(PS_SOLID, 1, gc);
 }
 
-static HFONT MakeSegoeFont(int pts, UINT dpi, int weight = FW_NORMAL) {
+static HFONT MakeBalooFont(int pts, UINT dpi, int weight = FW_NORMAL) {
     const int h = -MulDiv(pts, static_cast<int>(dpi), 72);
     return CreateFontW(h, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                       DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                       DEFAULT_PITCH | FF_DONTCARE, L"Baloo 2");
 }
 
 void Renderer::DestroyFonts() {
@@ -149,9 +149,9 @@ void Renderer::DestroyFonts() {
 
 void Renderer::RebuildFonts(UINT dpi) {
     DestroyFonts();
-    uiFont_      = MakeSegoeFont(9,  dpi);
-    titleFont_   = MakeSegoeFont(15, dpi, FW_SEMIBOLD);
-    sectionFont_ = MakeSegoeFont(9,  dpi, FW_SEMIBOLD);
+    uiFont_      = MakeBalooFont(9,  dpi);
+    titleFont_   = MakeBalooFont(15, dpi, FW_SEMIBOLD);
+    sectionFont_ = MakeBalooFont(9,  dpi, FW_SEMIBOLD);
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +302,8 @@ void Renderer::DrawKeepApartRings(HDC hdc, const AppState& state,
         Ellipse(hdc, c.x - rr, c.y - rr, c.x + rr, c.y + rr);
         if (!other.empty()) {
             RECT lbl{ c.x - rr, c.y - rr - Scale(15), c.x + rr, c.y - rr - Scale(1) };
-            DrawTextW(hdc, other.c_str(), -1, &lbl,
+            const std::wstring disp = DisplayStudentName(other, state.showLastNames);
+            DrawTextW(hdc, disp.c_str(), -1, &lbl,
                       DT_CENTER | DT_SINGLELINE | DT_NOCLIP | DT_BOTTOM);
         }
     }
@@ -323,11 +324,12 @@ void Renderer::PaintStudentDragPreview(HDC hdc, const AppState& state,
         const int prevBk = SetBkMode(hdc, TRANSPARENT);
         HGDIOBJ oldFont = SelectObject(hdc, sectionFont_ ? sectionFont_ : uiFont_);
         RECT shadow = OffsetRectCopy(textRect, Scale(1), Scale(1));
+        const std::wstring disp = DisplayStudentName(preview.studentName, state.showLastNames);
         SetTextColor(hdc, RGB(255, 255, 255));
-        DrawTextW(hdc, preview.studentName.c_str(), -1, &shadow,
+        DrawTextW(hdc, disp.c_str(), -1, &shadow,
                   DT_CENTER | DT_VCENTER | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
         SetTextColor(hdc, textColor);
-        DrawTextW(hdc, preview.studentName.c_str(), -1, &textRect,
+        DrawTextW(hdc, disp.c_str(), -1, &textRect,
                   DT_CENTER | DT_VCENTER | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
         SelectObject(hdc, oldFont);
         SetBkMode(hdc, prevBk);
@@ -766,6 +768,7 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
                                  s < static_cast<int>(seatCenters.size()); ++s) {
                     const POINT ctr = seatCenters[static_cast<size_t>(s)];
                     const std::wstring& occ = item.occupants[static_cast<size_t>(s)];
+                    const std::wstring disp = DisplayStudentName(occ, state.showLastNames);
                     const bool focused = state.selectedLayoutSeat &&
                         state.selectedLayoutSeat->first  == static_cast<int>(i) &&
                         state.selectedLayoutSeat->second == s;
@@ -815,14 +818,14 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
                     RECT tr{ box.left + Scale(3), box.top + Scale(2),
                              box.right - Scale(3), box.bottom - Scale(2) };
                     RECT calc = tr;
-                    DrawTextW(hdc, occ.c_str(), -1, &calc,
+                    DrawTextW(hdc, disp.c_str(), -1, &calc,
                               DT_CENTER | DT_WORDBREAK | DT_CALCRECT | DT_EDITCONTROL);
                     const int avail = tr.bottom - tr.top;
                     const int th = std::min<int>(calc.bottom - calc.top, avail);
                     RECT draw{ tr.left, tr.top + (avail - th) / 2, tr.right, tr.top + (avail - th) / 2 + th };
                     SetBkMode(hdc, TRANSPARENT);
                     SetTextColor(hdc, txt);
-                    DrawTextW(hdc, occ.c_str(), -1, &draw,
+                    DrawTextW(hdc, disp.c_str(), -1, &draw,
                               DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
                 }
             }

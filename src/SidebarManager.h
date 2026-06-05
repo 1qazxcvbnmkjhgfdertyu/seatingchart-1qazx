@@ -33,9 +33,17 @@ public:
 
     // --- Accessors (for Renderer::PaintInfoPanel) ---
     const std::vector<int>& SectionDividers() const { return sectionDividers_; }
-    int ScrollOffset() const { return scroll_; }
-    int HeaderH()     const { return headerH_; }
-    int StatusH()     const { return statusH_; }
+    int ScrollOffset()  const { return scroll_;  }
+    int HeaderH()       const { return headerH_; }
+    int StatusH()       const { return statusH_; }
+    int TotalHeaderH()  const { return headerH_ + tabH_; } // title+summary+tab strip
+
+    // --- Tab management ---
+    void SetActiveTab(int tab) { activeTab_ = tab; scroll_ = 0; }
+    int  ActiveTab()    const { return activeTab_; }
+
+    // Resize rule/roster ListViews to match panel width (call after Recalculate)
+    void ResizeListViewColumns(const ControlHandles& c, int panelWidth) const;
 
 private:
     int scroll_   = 0;
@@ -48,19 +56,23 @@ private:
     int buttonH_ = 30;
     int editH_ = 24;
     int sectionGap_ = 16;
-    int headerH_ = 104;
-    int statusH_ = 58;
+    int headerH_   = 104;
+    int tabH_      = 28;  // height of the tab strip
+    int statusH_   = 58;
+    int activeTab_ = 2;   // 0=Roster, 1=Rules, 2=Arrange (matches default Layout mode)
     int scrollLine_ = 36;
     std::vector<int> sectionDividers_;
 
     // Sub-functions called by Recalculate
     void RebuildMetrics(HWND sidebar, const Renderer& renderer);
-    int  LayoutCommonStrip   (HDWP& dwp, const ControlHandles& c,
-                               int px, int pw, int base, int scrollUsed);
-    int  LayoutSeatsModePanel(HDWP& dwp, const ControlHandles& c,
-                               int px, int pw, int base, int scrollUsed);
-    int  LayoutLayoutModePanel(HDWP& dwp, const ControlHandles& c,
-                                int px, int pw, int base, int scrollUsed);
+    int  LayoutRosterPanel (HDWP& dwp, const ControlHandles& c,
+                             int px, int pw, int base, int scrollUsed);
+    int  LayoutRulesPanel  (HDWP& dwp, const ControlHandles& c,
+                             int px, int pw, int base, int scrollUsed);
+    int  LayoutArrangePanel(HDWP& dwp, const ControlHandles& c,
+                             int px, int pw, int base, int scrollUsed);
+    int  LayoutGroupsPanel (HDWP& dwp, const ControlHandles& c,
+                             int px, int pw, int base, int scrollUsed);
     void UpdateControlVisibility(const ControlHandles& c, ChartMode mode);
     void UpdateScrollBar(HWND sidebar, int contentH, int viewH);
     void ClampScroll(HWND sidebar);
@@ -69,4 +81,6 @@ private:
     // paint over the fixed header or footer.  DeferFixed skips the clamp.
     void Defer     (HDWP& dwp, HWND child, int x, int y, int w, int h);
     void DeferFixed(HDWP& dwp, HWND child, int x, int y, int w, int h);
+    void PlaceButtons(HDWP& dwp, std::initializer_list<HWND> hs,
+                      int px, int pw, int& y, int minW);
 };

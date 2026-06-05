@@ -2,6 +2,40 @@
 #include "CrashLog.h"
 #include <windows.h>
 #include <commctrl.h>
+#include <string>
+
+// ---------------------------------------------------------------------------
+// Bundled font loader
+// Load Baloo2.ttf from the "fonts" subfolder next to the executable.
+// Using FR_PRIVATE keeps the font scoped to this process only — no system-wide
+// registration, no cleanup needed on other apps, removed automatically when
+// the process exits (Windows also removes it on RemoveFontResourceExW).
+// ---------------------------------------------------------------------------
+static std::wstring g_fontPath; // path kept so we can remove it on exit
+
+static void LoadBundledFonts() {
+    wchar_t exePath[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH)) return;
+
+    // Strip the exe filename to get the directory
+    std::wstring dir(exePath);
+    const size_t slash = dir.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) dir.resize(slash + 1);
+
+    g_fontPath = dir + L"fonts\\Baloo2.ttf";
+
+    if (GetFileAttributesW(g_fontPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        g_fontPath.clear(); // font file not found — fall back gracefully
+        return;
+    }
+
+    AddFontResourceExW(g_fontPath.c_str(), FR_PRIVATE, nullptr);
+}
+
+static void UnloadBundledFonts() {
+    if (!g_fontPath.empty())
+        RemoveFontResourceExW(g_fontPath.c_str(), FR_PRIVATE, nullptr);
+}
 
 // ---------------------------------------------------------------------------
 // WndProc trampoline
@@ -38,6 +72,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     SetUnhandledExceptionFilter(SeatingChartUnhandledExceptionFilter);
     WriteAppLog(L"Application starting");
     SetProcessDPIAware();
+    LoadBundledFonts(); // load Baloo 2 before any window/font is created
 
     WNDCLASSW wc{};
     wc.style         = CS_DBLCLKS;
@@ -64,7 +99,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     UpdateWindow(hwnd);
 
     MSG msg{};
-    while (GetMessageW(&msg, nullptr, 0, 0)) {
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         // Pretranslate: forward selected shortcuts to the main window even when
         // a child control has keyboard focus, without disturbing edit-control text ops.
         if (msg.message == WM_KEYDOWN && IsChild(hwnd, msg.hwnd)) {
@@ -96,5 +131,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    UnloadBundledFonts();
     return static_cast<int>(msg.wParam);
 }
