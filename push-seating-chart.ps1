@@ -8,7 +8,7 @@ Write-Host 'push-seating-chart: pushing seating-chart-app to GitHub...'
 # Show a quick summary of what will go up (committed changes only)
 $status = git status --short
 if ($status) {
-    Write-Host '--- Pending changes to push (committed) ---'
+    Write-Host '--- Changes that will be pushed (already committed) ---'
     $status | Select-Object -First 20
     if (($status | Measure-Object).Count -gt 20) {
         Write-Host '... (more)'
