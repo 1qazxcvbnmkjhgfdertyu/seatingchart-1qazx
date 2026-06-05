@@ -34,6 +34,8 @@ public:
     // --- Accessors (for Renderer::PaintInfoPanel) ---
     const std::vector<int>& SectionDividers() const { return sectionDividers_; }
     int ScrollOffset() const { return scroll_; }
+    int HeaderH()     const { return headerH_; }
+    int StatusH()     const { return statusH_; }
 
 private:
     int scroll_   = 0;

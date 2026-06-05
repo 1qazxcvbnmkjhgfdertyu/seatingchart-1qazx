@@ -1391,22 +1391,30 @@ void SeatingChartApp::PromptAndApplyRoomSize() {
             }
             switch (msg) {
             case WM_CREATE: {
+                // All coordinates scaled for DPI — dialog outer size is Scale(224)×Scale(148).
                 auto makeLabel = [&](const wchar_t* text, int x, int y) {
                     CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE,
-                        x, y, 80, 22, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+                        Scale(x), Scale(y), Scale(68), Scale(20),
+                        hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
                 };
-                makeLabel(L"Width", 12, 16);
-                makeLabel(L"Height", 12, 50);
-                s->wEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
-                    82, 14, 110, 24, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-                s->hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
-                    82, 48, 110, 24, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+                makeLabel(L"Width",  12, 15);
+                makeLabel(L"Height", 12, 47);
+                s->wEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                    WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
+                    Scale(84), Scale(13), Scale(116), Scale(24),
+                    hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+                s->hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                    WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
+                    Scale(84), Scale(45), Scale(116), Scale(24),
+                    hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
                 SetWindowTextW(s->wEdit, std::to_wstring(s->width).c_str());
                 SetWindowTextW(s->hEdit, std::to_wstring(s->height).c_str());
                 CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                    42, 88, 72, 28, hwnd, reinterpret_cast<HMENU>(IDOK), GetModuleHandleW(nullptr), nullptr);
+                    Scale(36), Scale(80), Scale(72), Scale(28),
+                    hwnd, reinterpret_cast<HMENU>(IDOK), GetModuleHandleW(nullptr), nullptr);
                 CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE,
-                    122, 88, 72, 28, hwnd, reinterpret_cast<HMENU>(IDCANCEL), GetModuleHandleW(nullptr), nullptr);
+                    Scale(116), Scale(80), Scale(72), Scale(28),
+                    hwnd, reinterpret_cast<HMENU>(IDCANCEL), GetModuleHandleW(nullptr), nullptr);
                 return 0;
             }
             case WM_COMMAND:
@@ -1445,7 +1453,7 @@ void SeatingChartApp::PromptAndApplyRoomSize() {
     ps.height = state_.roomH > 0 ? state_.roomH : kDefaultRoomH;
     HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, cls, L"Change Room Size",
         WS_POPUP | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
-        Scale(230), Scale(160), hwnd_, nullptr, GetModuleHandleW(nullptr), &ps);
+        Scale(224), Scale(148), hwnd_, nullptr, GetModuleHandleW(nullptr), &ps);
     if (!dlg) return;
 
     RECT pr{}, dr{};
@@ -1479,6 +1487,56 @@ void SeatingChartApp::PromptAndApplyRoomSize() {
     SetStatus(ps.width > 0 && ps.height > 0
         ? L"Room set to " + std::to_wstring(ps.width) + L"x" + std::to_wstring(ps.height) + L" units"
         : L"Room size set to default");
+}
+
+// ---------------------------------------------------------------------------
+// Front-edge helpers — hit-test, nearest-edge, commit
+// ---------------------------------------------------------------------------
+
+RECT SeatingChartApp::FrontIndicatorRect() const {
+    const RECT& room  = layoutTx_.roomScreenRect;
+    const RoomEdge fe = state_.frontEdge;
+    const bool vert   = (fe == RoomEdge::Left || fe == RoomEdge::Right);
+    const int  band   = vert ? std::max(Scale(22), 18) : std::max(Scale(20), 16);
+    RECT strip = room;
+    switch (fe) {
+    case RoomEdge::Top:    strip.bottom = room.top    + band; break;
+    case RoomEdge::Bottom: strip.top    = room.bottom - band; break;
+    case RoomEdge::Left:   strip.right  = room.left   + band; break;
+    case RoomEdge::Right:  strip.left   = room.right  - band; break;
+    }
+    return strip;
+}
+
+bool SeatingChartApp::HitTestFrontIndicator(POINT clientPt) const {
+    if (!PtInRectEx(layout_.chart, clientPt)) return false;
+    return PtInRectEx(FrontIndicatorRect(), clientPt);
+}
+
+RoomEdge SeatingChartApp::NearestRoomEdge(POINT clientPt) const {
+    const RECT& room  = layoutTx_.roomScreenRect;
+    const int dTop    = std::abs(clientPt.y - room.top);
+    const int dBottom = std::abs(clientPt.y - room.bottom);
+    const int dLeft   = std::abs(clientPt.x - room.left);
+    const int dRight  = std::abs(clientPt.x - room.right);
+    const int minD    = std::min({dTop, dBottom, dLeft, dRight});
+    if (minD == dTop)    return RoomEdge::Top;
+    if (minD == dBottom) return RoomEdge::Bottom;
+    if (minD == dLeft)   return RoomEdge::Left;
+    return RoomEdge::Right;
+}
+
+void SeatingChartApp::CommitFrontEdge(RoomEdge edge) {
+    AppState::Transaction tx(state_);
+    tx->frontEdge = edge;
+    tx.Commit();
+    static const wchar_t* names[] = { L"Top", L"Bottom", L"Left", L"Right" };
+    const int idx = (edge == RoomEdge::Top)    ? 0 :
+                    (edge == RoomEdge::Bottom)  ? 1 :
+                    (edge == RoomEdge::Left)    ? 2 : 3;
+    SetStatus(std::wstring(L"Front of room: ") + names[idx]);
+    ScheduleSave();
+    InvalidateChart();
 }
 
 // ---------------------------------------------------------------------------
@@ -1666,6 +1724,13 @@ LRESULT SeatingChartApp::OnKeyDown(WPARAM vk, bool ctrl, bool shift) {
     }
 
     if (vk == VK_ESCAPE) {
+        if (draggingFront_) {
+            draggingFront_ = false;
+            ReleaseCapture();
+            state_.frontEdge = frontDragOriginalEdge_;
+            InvalidateChart();
+            return 0;
+        }
         if (rosterDragPrimed_ || rosterDragging_) {
             EndRosterDrag({}, false);
             SetStatus(L"Student drag cancelled");
@@ -1814,6 +1879,14 @@ LRESULT SeatingChartApp::OnLButtonDown(POINT pt, bool shift) {
         SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
         return 0;
     }
+    // Front-edge indicator drag — takes priority over item/seat actions
+    if (HitTestFrontIndicator(pt)) {
+        frontDragOriginalEdge_ = state_.frontEdge;
+        draggingFront_ = true;
+        SetCapture(hwnd_);
+        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        return 0;
+    }
     if (state_.chartMode == ChartMode::Seats) {
         // Assign tool: click a furniture seat to place a roster name.
         if (const auto seat = selection_.HitTestSeatSlot(pt)) {
@@ -1887,6 +1960,17 @@ LRESULT SeatingChartApp::OnLButtonDblClk(POINT pt) {
 }
 
 LRESULT SeatingChartApp::OnMouseMove(POINT pt, WPARAM buttons) {
+    if (draggingFront_ && (buttons & MK_LBUTTON)) {
+        // Live-preview: move the front bar to the nearest edge as the user drags
+        if (PtInRectEx(layout_.chart, pt)) {
+            const RoomEdge hovered = NearestRoomEdge(pt);
+            if (hovered != state_.frontEdge) {
+                state_.frontEdge = hovered;
+                InvalidateChart();
+            }
+        }
+        return 0;
+    }
     if (resizingSidebar_ && (buttons & MK_LBUTTON)) {
         ResizeSidebarLive(pt);
     } else if (editor_.IsDragging() && (buttons & MK_LBUTTON)) editor_.UpdateDrag(pt);
@@ -1999,6 +2083,33 @@ LRESULT SeatingChartApp::OnContextMenu(POINT screenPt) {
         return DefWindowProcW(hwnd_, WM_CONTEXTMENU, 0, MAKELPARAM(screenPt.x, screenPt.y));
     }
 
+    // Right-click on the front-edge indicator — works in any mode
+    {
+        POINT cp = screenPt; ScreenToClient(hwnd_, &cp);
+        if (HitTestFrontIndicator(cp)) {
+            static const struct { RoomEdge e; const wchar_t* label; } kEdges[] = {
+                { RoomEdge::Top,    L"Front: Top"    },
+                { RoomEdge::Bottom, L"Front: Bottom" },
+                { RoomEdge::Left,   L"Front: Left"   },
+                { RoomEdge::Right,  L"Front: Right"  },
+            };
+            HMENU menu = CreatePopupMenu();
+            if (!menu) return 0;
+            for (int i = 0; i < 4; ++i)
+                AppendMenuW(menu, MF_STRING | (state_.frontEdge == kEdges[i].e ? MF_CHECKED : 0u),
+                            static_cast<UINT_PTR>(i + 1), kEdges[i].label);
+            const int id = static_cast<int>(TrackPopupMenu(
+                menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+                screenPt.x, screenPt.y, 0, hwnd_, nullptr));
+            DestroyMenu(menu);
+            if (id >= 1 && id <= 4) {
+                const RoomEdge newEdge = kEdges[id - 1].e;
+                if (newEdge != state_.frontEdge) CommitFrontEdge(newEdge);
+            }
+            return 0;
+        }
+    }
+
     if (state_.chartMode != ChartMode::Layout)
         return DefWindowProcW(hwnd_, WM_CONTEXTMENU, 0, MAKELPARAM(screenPt.x, screenPt.y));
 
@@ -2087,6 +2198,10 @@ LRESULT SeatingChartApp::OnSetCursor(LPARAM lParam) {
         POINT pt{}; GetCursorPos(&pt); ScreenToClient(hwnd_, &pt);
         if (HitSidebarSplitter(pt) || resizingSidebar_) {
             SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+            return TRUE;
+        }
+        if (draggingFront_ || HitTestFrontIndicator(pt)) {
+            SetCursor(LoadCursor(nullptr, IDC_HAND));
             return TRUE;
         }
         if (state_.chartMode == ChartMode::Layout) {
@@ -2210,7 +2325,8 @@ LRESULT SeatingChartApp::HandleSidebarMessage(HWND sidebar, UINT msg,
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(sidebar, &ps);
         renderer_.PaintInfoPanel(hdc, sidebar, layout_,
-                                  sidebar_.ScrollOffset(), sidebar_.SectionDividers());
+                                  sidebar_.ScrollOffset(), sidebar_.SectionDividers(),
+                                  sidebar_.HeaderH(), sidebar_.StatusH());
         EndPaint(sidebar, &ps);
         return 0;
     }
@@ -2266,7 +2382,14 @@ LRESULT SeatingChartApp::HandleMessage(HWND hwnd, UINT msg,
     case WM_MOUSEMOVE:     return OnMouseMove({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, wParam);
     case WM_MOUSELEAVE:    return OnMouseLeave();
     case WM_LBUTTONUP:
-        if (resizingSidebar_) {
+        if (draggingFront_) {
+            draggingFront_ = false;
+            ReleaseCapture();
+            if (state_.frontEdge != frontDragOriginalEdge_)
+                CommitFrontEdge(state_.frontEdge);
+            else
+                InvalidateChart();
+        } else if (resizingSidebar_) {
             resizingSidebar_ = false;
             ReleaseCapture();
             RecalculateLayout();
@@ -2280,6 +2403,12 @@ LRESULT SeatingChartApp::HandleMessage(HWND hwnd, UINT msg,
         }
         return 0;
     case WM_CAPTURECHANGED:
+        if (draggingFront_) {
+            // Cancelled — restore original edge
+            draggingFront_ = false;
+            state_.frontEdge = frontDragOriginalEdge_;
+            InvalidateChart();
+        }
         resizingSidebar_ = false;
         if (rubberBandSelecting_) { rubberBandSelecting_ = false; InvalidateChart(); }
         editor_.CancelEdit(/*doRelease=*/false);

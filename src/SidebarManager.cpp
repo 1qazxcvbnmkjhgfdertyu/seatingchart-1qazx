@@ -67,11 +67,7 @@ int SidebarManager::LayoutCommonStrip(HDWP& dwp, const ControlHandles& c,
         if (col != 0) y += buttonH_ + gap_;
     };
 
-    rec(y);
-    buttons({c.layoutMode, c.seatMode}, Scale(120));
-
-    // Capture / Export / Print / CSV — own row, 4 columns.
-    y += sectionGap_;
+    // Mode is switched via the Arrange/Assign menu items — no sidebar buttons needed.
 
     return y;
 }
@@ -239,10 +235,9 @@ void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode 
                    c.frontEdgeLabel, c.frontEdgeButton})
         if (h) ShowWindow(h, SW_HIDE);
 
-    // Always visible (in the common strip)
-    if (c.modeLabel) ShowWindow(c.modeLabel, SW_HIDE);
-    for (HWND h : {c.seatMode, c.layoutMode})
-        if (h) ShowWindow(h, SW_SHOW);
+    // Mode buttons no longer live in the sidebar; keep them hidden always.
+    for (HWND h : {c.modeLabel, c.seatMode, c.layoutMode})
+        if (h) ShowWindow(h, SW_HIDE);
 }
 
 // ---------------------------------------------------------------------------
@@ -334,9 +329,14 @@ void SidebarManager::ScrollTo(HWND sidebar, int newPos) {
     SetScrollInfo(sidebar, SB_VERT, &si, TRUE);
 
     if (std::abs(delta) < std::max(1, viewH_)) {
+        // SW_SCROLLCHILDREN is intentionally omitted — Recalculate (called by the
+        // parent after ScrollTo) repositions all child HWNDs atomically, so we
+        // only need to scroll the background pixels here. Including SW_SCROLLCHILDREN
+        // would temporarily move the fixed header/footer labels into the scrollable
+        // region before Recalculate corrects them, causing a visible clipping artifact.
         ScrollWindowEx(sidebar, 0, -delta, &sr, &sr, nullptr, nullptr,
-                       SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE);
-        RedrawWindow(sidebar, &sr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+                       SW_INVALIDATE | SW_ERASE);
+        RedrawWindow(sidebar, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
     }
 }
 

@@ -948,7 +948,8 @@ void Renderer::PaintWindowBuffered(HWND hwnd, HDC hdc, const AppState& state,
 
 void Renderer::PaintInfoPanel(HDC hdc, HWND sidebar, const AppLayout& layout,
                                int scrollOffset,
-                               const std::vector<int>& sectionDividers) const {
+                               const std::vector<int>& sectionDividers,
+                               int headerH, int statusH) const {
     RECT client{}; GetClientRect(sidebar, &client);
     HBRUSH pb = res_.panelBrush ? res_.panelBrush : CreateSolidBrush(theme_.panel);
     FillRect(hdc, &client, pb);
@@ -960,10 +961,11 @@ void Renderer::PaintInfoPanel(HDC hdc, HWND sidebar, const AppLayout& layout,
     MoveToEx(hdc, client.left, client.top, nullptr);
     LineTo(hdc, client.left, client.bottom);
 
-    const int px = layout.info.left;
-    const int pw = std::max(1, static_cast<int>(client.right - Margin() * 2));
-    const int headerBottom = Scale(88);
-    const int statusTop    = std::max(headerBottom, static_cast<int>(client.bottom - Scale(58)));
+    const int px          = layout.info.left;
+    const int pw          = std::max(1, static_cast<int>(client.right - Margin() * 2));
+    const int headerBottom = headerH;
+    const int statusTop    = std::max(headerBottom,
+                                      static_cast<int>(client.bottom) - statusH);
 
     MoveToEx(hdc, px, headerBottom, nullptr); LineTo(hdc, px + pw, headerBottom);
     MoveToEx(hdc, px, statusTop,    nullptr); LineTo(hdc, px + pw, statusTop);

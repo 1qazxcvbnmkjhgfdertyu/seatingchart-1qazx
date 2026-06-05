@@ -109,6 +109,10 @@ private:
     int  hoverItem_     = -1;
     bool trackingMouse_ = false;
 
+    // --- Front-edge drag ---
+    bool     draggingFront_          = false;
+    RoomEdge frontDragOriginalEdge_  = RoomEdge::Top;
+
     // --- Roster drag assignment ---
     bool rosterDragPrimed_ = false;
     bool rosterDragging_ = false;
@@ -141,6 +145,12 @@ private:
     void ShowAlignmentToolsWindow();
     void ShowObjectInspectorWindow();
     void LayoutFloatingTools();
+
+    // --- Front-edge helpers ---
+    [[nodiscard]] RECT     FrontIndicatorRect() const;
+    [[nodiscard]] bool     HitTestFrontIndicator(POINT clientPt) const;
+    [[nodiscard]] RoomEdge NearestRoomEdge(POINT clientPt) const;
+    void                   CommitFrontEdge(RoomEdge edge);
     void PromptAndApplyRoomSize();
     bool HitSidebarSplitter(POINT pt) const;
     void ResizeSidebarLive(POINT pt);

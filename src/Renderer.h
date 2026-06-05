@@ -82,7 +82,8 @@ public:
     // sectionDividers: absolute content-top-relative Y positions set by SidebarManager.
     void PaintInfoPanel(HDC hdc, HWND sidebar, const AppLayout& layout,
                         int scrollOffset,
-                        const std::vector<int>& sectionDividers) const;
+                        const std::vector<int>& sectionDividers,
+                        int headerH, int statusH) const;
 
     // --- Export ---
     [[nodiscard]] bool CopyChartToClipboard(HWND hwnd,
