@@ -9,6 +9,7 @@
 #include <cmath>
 #include <commdlg.h>
 #include <fstream>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <limits>
@@ -34,6 +35,107 @@ static bool IsCommandActivation(int notif) {
     return notif == 0 || notif == BN_CLICKED;
 }
 
+struct BigUInt {
+    static constexpr uint32_t kBase = 1000000000u;
+    std::vector<uint32_t> digits;
+
+    BigUInt() = default;
+    BigUInt(uint64_t value) { Assign(value); }
+
+    void Assign(uint64_t value) {
+        digits.clear();
+        if (value == 0) return;
+        while (value > 0) {
+            digits.push_back(static_cast<uint32_t>(value % kBase));
+            value /= kBase;
+        }
+    }
+
+    void Trim() {
+        while (!digits.empty() && digits.back() == 0) digits.pop_back();
+    }
+
+    [[nodiscard]] bool IsZero() const { return digits.empty(); }
+
+    [[nodiscard]] std::string ToString() const {
+        if (digits.empty()) return "0";
+        std::string out = std::to_string(digits.back());
+        for (size_t i = digits.size(); i-- > 1;) {
+            std::string chunk = std::to_string(digits[i - 1]);
+            out += std::string(9 - chunk.size(), '0');
+            out += chunk;
+        }
+        return out;
+    }
+
+    BigUInt& operator+=(const BigUInt& other) {
+        const size_t maxLen = std::max(digits.size(), other.digits.size());
+        digits.resize(maxLen, 0);
+        uint64_t carry = 0;
+        for (size_t i = 0; i < maxLen; ++i) {
+            const uint64_t sum = carry + digits[i] +
+                (i < other.digits.size() ? other.digits[i] : 0u);
+            digits[i] = static_cast<uint32_t>(sum % kBase);
+            carry = sum / kBase;
+        }
+        if (carry != 0) digits.push_back(static_cast<uint32_t>(carry));
+        return *this;
+    }
+
+    BigUInt& operator*=(uint32_t factor) {
+        if (factor == 0 || IsZero()) {
+            digits.clear();
+            return *this;
+        }
+        uint64_t carry = 0;
+        for (uint32_t& digit : digits) {
+            const uint64_t value = (static_cast<uint64_t>(digit) * factor) + carry;
+            digit = static_cast<uint32_t>(value % kBase);
+            carry = value / kBase;
+        }
+        while (carry != 0) {
+            digits.push_back(static_cast<uint32_t>(carry % kBase));
+            carry /= kBase;
+        }
+        return *this;
+    }
+
+    BigUInt& operator/=(uint32_t divisor) {
+        uint64_t rem = 0;
+        for (size_t i = digits.size(); i-- > 0;) {
+            const uint64_t cur = digits[i] + rem * kBase;
+            digits[i] = static_cast<uint32_t>(cur / divisor);
+            rem = cur % divisor;
+        }
+        Trim();
+        return *this;
+    }
+
+    [[nodiscard]] BigUInt Multiply(const BigUInt& other) const {
+        if (IsZero() || other.IsZero()) return BigUInt(0);
+        BigUInt out;
+        out.digits.assign(digits.size() + other.digits.size(), 0);
+        for (size_t i = 0; i < digits.size(); ++i) {
+            uint64_t carry = 0;
+            for (size_t j = 0; j < other.digits.size(); ++j) {
+                const uint64_t cur = out.digits[i + j] +
+                    (static_cast<uint64_t>(digits[i]) * other.digits[j]) + carry;
+                out.digits[i + j] = static_cast<uint32_t>(cur % kBase);
+                carry = cur / kBase;
+            }
+            size_t pos = i + other.digits.size();
+            while (carry != 0) {
+                const uint64_t cur = out.digits[pos] + carry;
+                out.digits[pos] = static_cast<uint32_t>(cur % kBase);
+                carry = cur / kBase;
+                ++pos;
+            }
+        }
+        out.Trim();
+        return out;
+    }
+};
+
 static long double PermutationCount(int n, int r) {
     if (n < 0 || r < 0 || r > n) return 0;
     long double out = 1.0L;
@@ -49,6 +151,17 @@ static long double BinomialCount(int n, int k) {
     for (int i = 1; i <= k; ++i) {
         out *= static_cast<long double>(n - k + i);
         out /= static_cast<long double>(i);
+    }
+    return out;
+}
+
+static BigUInt BinomialCountExact(int n, int k) {
+    if (n < 0 || k < 0 || k > n) return 0;
+    k = std::min(k, n - k);
+    BigUInt out(1);
+    for (int i = 1; i <= k; ++i) {
+        out *= (n - k + i);
+        out /= i;
     }
     return out;
 }
@@ -138,6 +251,40 @@ static long double OrderedGroupArrangementCount(int studentCount, const std::vec
         remaining -= sz;
     }
     return out;
+}
+
+static BigUInt OrderedGroupArrangementCountExact(int studentCount, const std::vector<int>& pattern) {
+    if (studentCount <= 0 || pattern.empty()) return 0;
+    int total = 0;
+    for (int sz : pattern) total += sz;
+    if (total != studentCount) return 0;
+
+    BigUInt out(1);
+    int remaining = studentCount;
+    for (int sz : pattern) {
+        const BigUInt choose = BinomialCountExact(remaining, sz);
+        out = out.Multiply(choose);
+        remaining -= sz;
+    }
+    return out;
+}
+
+static std::wstring FormatExactInteger(const BigUInt& value) {
+    if (value.IsZero()) return L"0";
+    std::string text = value.ToString();
+    std::wstring out(text.begin(), text.end());
+    for (int i = static_cast<int>(out.size()) - 3; i > 0; i -= 3)
+        out.insert(static_cast<size_t>(i), 1, L',');
+    return out;
+}
+
+static int Popcount64(uint64_t value) {
+    int count = 0;
+    while (value != 0) {
+        value &= (value - 1);
+        ++count;
+    }
+    return count;
 }
 
 static void RegisterToolWindowClass() {
@@ -282,9 +429,11 @@ void SeatingChartApp::SetStatus(const std::wstring& text) {
 
 void SeatingChartApp::RefreshAutoAssignFooter() {
     const bool onGroupsTab = sidebar_.ActiveTab() == 3;
-    const auto estimatedTotal = onGroupsTab ? EstimateGroupPermutations()
-                                            : EstimateRuleAwarePermutations(state_);
+    const auto estimatedTotal = EstimateRuleAwarePermutations(state_);
     if (controls_.footerProgress) {
+        if (onGroupsTab) {
+            SendMessageW(controls_.footerProgress, PBM_SETPOS, 0, 0);
+        } else {
         const size_t limit = aaProgressLimit_ > 0 ? aaProgressLimit_ : kDefaultAutoAssignSearchLimit;
         const int pct = (aaRunning_ && limit > 0)
             ? static_cast<int>(std::clamp((aaProgressSteps_ * 100) / limit,
@@ -292,18 +441,20 @@ void SeatingChartApp::RefreshAutoAssignFooter() {
                                           static_cast<size_t>(100)))
             : 0;
         SendMessageW(controls_.footerProgress, PBM_SETPOS, pct, 0);
+        }
     }
     if (controls_.footerMetaLabel) {
-        const wchar_t* label = onGroupsTab ? L"Group permutations left: "
-                                           : L"Permutations left: ";
-        if (aaRunning_) {
+        if (onGroupsTab) {
+            SetWindowTextW(controls_.footerMetaLabel,
+                (L"Exact groupings left: " + ExactGroupPermutationText()).c_str());
+        } else if (aaRunning_) {
             const long double remaining =
                 std::max(0.0L, estimatedTotal - static_cast<long double>(aaProgressSteps_));
             SetWindowTextW(controls_.footerMetaLabel,
-                (std::wstring(label) + FormatPermutationEstimate(remaining)).c_str());
+                (L"Permutations left: " + FormatPermutationEstimate(remaining)).c_str());
         } else {
             SetWindowTextW(controls_.footerMetaLabel,
-                (std::wstring(label) + FormatPermutationEstimate(estimatedTotal)).c_str());
+                (L"Permutations left: " + FormatPermutationEstimate(estimatedTotal)).c_str());
         }
     }
 }
@@ -2423,6 +2574,313 @@ std::vector<int> SeatingChartApp::CurrentGroupPattern() const {
         }
     }
     return BuildGroupPattern(N, base);
+}
+
+std::wstring SeatingChartApp::BuildGroupPermutationCacheKey() const {
+    std::wstring key;
+    key.reserve(4096);
+    key += L"N:";
+    key += std::to_wstring(state_.roster.size());
+    key += L"|P:";
+    for (const int sz : CurrentGroupPattern()) {
+        key += std::to_wstring(sz);
+        key += L",";
+    }
+    key += L"|O:";
+    key += GroupAvoidSameNumberEnabled() ? L"1" : L"0";
+    key += GroupAvoidSamePartnersEnabled() ? L"1" : L"0";
+    key += L"|R:";
+    for (const auto& name : state_.roster) {
+        key += CanonicalName(name);
+        key += L",";
+    }
+    key += L"|KA:";
+    {
+        std::vector<std::wstring> rows;
+        rows.reserve(state_.restrictions.size());
+        for (const auto& rule : state_.restrictions)
+            rows.push_back(CanonicalName(rule.first) + L">" + CanonicalName(rule.second));
+        std::sort(rows.begin(), rows.end());
+        for (const auto& row : rows) key += row + L";";
+    }
+    key += L"|KT:";
+    {
+        std::vector<std::wstring> rows;
+        rows.reserve(state_.affinities.size());
+        for (const auto& rule : state_.affinities)
+            rows.push_back(CanonicalName(rule.first) + L">" + CanonicalName(rule.second));
+        std::sort(rows.begin(), rows.end());
+        for (const auto& row : rows) key += row + L";";
+    }
+    key += L"|MT:";
+    {
+        std::vector<std::wstring> rows;
+        rows.reserve(state_.mustTogether.size());
+        for (const auto& rule : state_.mustTogether)
+            rows.push_back(CanonicalName(rule.first) + L">" + CanonicalName(rule.second));
+        std::sort(rows.begin(), rows.end());
+        for (const auto& row : rows) key += row + L";";
+    }
+    key += L"|GN:";
+    {
+        std::vector<std::wstring> rows;
+        rows.reserve(groupNumberHistory_.size());
+        for (const auto& [name, groups] : groupNumberHistory_) {
+            std::vector<int> sortedGroups(groups.begin(), groups.end());
+            std::sort(sortedGroups.begin(), sortedGroups.end());
+            std::wstring row = name + L":";
+            for (const int idx : sortedGroups) {
+                row += std::to_wstring(idx);
+                row += L",";
+            }
+            rows.push_back(std::move(row));
+        }
+        std::sort(rows.begin(), rows.end());
+        for (const auto& row : rows) key += row + L";";
+    }
+    key += L"|GP:";
+    {
+        std::vector<std::wstring> rows;
+        rows.reserve(groupPartnerSetHistory_.size());
+        for (const auto& [name, histories] : groupPartnerSetHistory_) {
+            std::wstring row = name + L":";
+            std::vector<std::wstring> historyRows;
+            historyRows.reserve(histories.size());
+            for (const auto& partners : histories) {
+                std::vector<std::wstring> sortedPartners(partners.begin(), partners.end());
+                std::sort(sortedPartners.begin(), sortedPartners.end());
+                std::wstring historyRow = L"[";
+                for (const auto& partner : sortedPartners) {
+                    historyRow += partner;
+                    historyRow += L",";
+                }
+                historyRow += L"]";
+                historyRows.push_back(std::move(historyRow));
+            }
+            std::sort(historyRows.begin(), historyRows.end());
+            for (const auto& historyRow : historyRows) row += historyRow;
+            rows.push_back(std::move(row));
+        }
+        std::sort(rows.begin(), rows.end());
+        for (const auto& row : rows) key += row + L";";
+    }
+    return key;
+}
+
+std::wstring SeatingChartApp::ExactGroupPermutationText() {
+    const std::wstring key = BuildGroupPermutationCacheKey();
+    if (key == groupPermutationCacheKey_) return groupPermutationCacheValue_;
+
+    const auto pattern = CurrentGroupPattern();
+    const int studentCount = static_cast<int>(state_.roster.size());
+    if (studentCount == 0 || pattern.empty()) {
+        groupPermutationCacheKey_ = key;
+        groupPermutationCacheValue_ = L"0";
+        return groupPermutationCacheValue_;
+    }
+
+    struct Dsu {
+        std::vector<int> parent;
+        explicit Dsu(int n) : parent(static_cast<size_t>(n)) {
+            for (int i = 0; i < n; ++i) parent[static_cast<size_t>(i)] = i;
+        }
+        int Find(int x) {
+            int& p = parent[static_cast<size_t>(x)];
+            if (p != x) p = Find(p);
+            return p;
+        }
+        void Union(int a, int b) {
+            a = Find(a);
+            b = Find(b);
+            if (a != b) parent[static_cast<size_t>(b)] = a;
+        }
+    };
+
+    std::unordered_map<std::wstring, int> indexByName;
+    for (int i = 0; i < studentCount; ++i)
+        indexByName[CanonicalName(state_.roster[static_cast<size_t>(i)])] = i;
+
+    Dsu dsu(studentCount);
+    auto unionRule = [&](const Restriction& rule) {
+        const auto ia = indexByName.find(CanonicalName(rule.first));
+        const auto ib = indexByName.find(CanonicalName(rule.second));
+        if (ia != indexByName.end() && ib != indexByName.end())
+            dsu.Union(ia->second, ib->second);
+    };
+    for (const auto& rule : state_.affinities) unionRule(rule);
+    for (const auto& rule : state_.mustTogether) unionRule(rule);
+
+    std::unordered_map<int, std::vector<int>> groupsByRoot;
+    for (int i = 0; i < studentCount; ++i)
+        groupsByRoot[dsu.Find(i)].push_back(i);
+
+    struct Component {
+        uint64_t studentMask = 0;
+        int size = 0;
+    };
+    std::vector<Component> components;
+    std::vector<int> componentOfStudent(static_cast<size_t>(studentCount), -1);
+    components.reserve(groupsByRoot.size());
+    for (const auto& [root, members] : groupsByRoot) {
+        (void)root;
+        Component comp;
+        comp.size = static_cast<int>(members.size());
+        for (const int idx : members) {
+            comp.studentMask |= (uint64_t{1} << idx);
+            componentOfStudent[static_cast<size_t>(idx)] = static_cast<int>(components.size());
+        }
+        components.push_back(comp);
+    }
+
+    const int componentCount = static_cast<int>(components.size());
+    std::vector<uint64_t> conflictMask(static_cast<size_t>(componentCount), 0);
+    for (const auto& rule : state_.restrictions) {
+        const auto ia = indexByName.find(CanonicalName(rule.first));
+        const auto ib = indexByName.find(CanonicalName(rule.second));
+        if (ia == indexByName.end() || ib == indexByName.end()) continue;
+        const int ca = componentOfStudent[static_cast<size_t>(ia->second)];
+        const int cb = componentOfStudent[static_cast<size_t>(ib->second)];
+        if (ca == cb) {
+            groupPermutationCacheKey_ = key;
+            groupPermutationCacheValue_ = L"0";
+            return groupPermutationCacheValue_;
+        }
+        conflictMask[static_cast<size_t>(ca)] |= (uint64_t{1} << cb);
+        conflictMask[static_cast<size_t>(cb)] |= (uint64_t{1} << ca);
+    }
+
+    const bool avoidSameNumber = GroupAvoidSameNumberEnabled();
+    const bool avoidSamePartners = GroupAvoidSamePartnersEnabled();
+    if (!avoidSameNumber && !avoidSamePartners &&
+        state_.restrictions.empty() && state_.affinities.empty() && state_.mustTogether.empty()) {
+        groupPermutationCacheKey_ = key;
+        groupPermutationCacheValue_ = FormatExactInteger(
+            OrderedGroupArrangementCountExact(studentCount, pattern));
+        return groupPermutationCacheValue_;
+    }
+    if (studentCount > 60) {
+        groupPermutationCacheKey_ = key;
+        groupPermutationCacheValue_ = L"0";
+        return groupPermutationCacheValue_;
+    }
+
+    std::vector<std::vector<uint64_t>> priorPartnerMasks(static_cast<size_t>(studentCount));
+    if (avoidSamePartners) {
+        for (int i = 0; i < studentCount; ++i) {
+            const auto canon = CanonicalName(state_.roster[static_cast<size_t>(i)]);
+            const auto hist = groupPartnerSetHistory_.find(canon);
+            if (hist == groupPartnerSetHistory_.end()) continue;
+            for (const auto& priorPartners : hist->second) {
+                uint64_t mask = 0;
+                for (const auto& partner : priorPartners) {
+                    const auto it = indexByName.find(partner);
+                    if (it != indexByName.end()) mask |= (uint64_t{1} << it->second);
+                }
+                priorPartnerMasks[static_cast<size_t>(i)].push_back(mask);
+            }
+        }
+    }
+
+    std::vector<std::vector<bool>> forbiddenGroup(static_cast<size_t>(componentCount),
+                                                  std::vector<bool>(pattern.size(), false));
+    if (avoidSameNumber) {
+        for (int i = 0; i < studentCount; ++i) {
+            const auto canon = CanonicalName(state_.roster[static_cast<size_t>(i)]);
+            const auto hist = groupNumberHistory_.find(canon);
+            if (hist == groupNumberHistory_.end()) continue;
+            const int comp = componentOfStudent[static_cast<size_t>(i)];
+            for (const int gi : hist->second) {
+                if (gi >= 0 && gi < static_cast<int>(pattern.size()))
+                    forbiddenGroup[static_cast<size_t>(comp)][static_cast<size_t>(gi)] = true;
+            }
+        }
+    }
+
+    auto violatesPartnerHistory = [&](uint64_t selectedStudents) {
+            if (!avoidSamePartners) return false;
+            for (int i = 0; i < studentCount; ++i) {
+                if ((selectedStudents & (uint64_t{1} << i)) == 0) continue;
+                const uint64_t partners = selectedStudents & ~(uint64_t{1} << i);
+                if (partners == 0) continue;
+                for (const uint64_t priorMask : priorPartnerMasks[static_cast<size_t>(i)]) {
+                    const uint64_t overlapMask = partners & priorMask;
+                    if (Popcount64(overlapMask) >= 2) return true;
+                }
+            }
+            return false;
+        };
+
+    struct MemoKey {
+        int groupIndex = 0;
+        uint64_t remainingMask = 0;
+        bool operator==(const MemoKey& other) const {
+            return groupIndex == other.groupIndex && remainingMask == other.remainingMask;
+        }
+    };
+    struct MemoHasher {
+        size_t operator()(const MemoKey& key) const {
+            return (static_cast<size_t>(key.groupIndex) * 1315423911u) ^
+                   static_cast<size_t>(key.remainingMask);
+        }
+    };
+
+    std::unordered_map<MemoKey, BigUInt, MemoHasher> memo;
+    std::function<BigUInt(int, uint64_t)> countGroups;
+    countGroups = [&](int groupIndex, uint64_t remainingMask) -> BigUInt {
+        if (groupIndex == static_cast<int>(pattern.size()))
+            return remainingMask == 0 ? BigUInt(1) : BigUInt(0);
+
+        const MemoKey memoKey{groupIndex, remainingMask};
+        if (const auto it = memo.find(memoKey); it != memo.end())
+            return it->second;
+
+        std::vector<int> remainingComponents;
+        remainingComponents.reserve(componentCount);
+        for (int comp = 0; comp < componentCount; ++comp) {
+            if ((remainingMask & (uint64_t{1} << comp)) != 0)
+                remainingComponents.push_back(comp);
+        }
+
+        BigUInt total(0);
+        const int targetSize = pattern[static_cast<size_t>(groupIndex)];
+        std::function<void(size_t, int, uint64_t, uint64_t)> chooseSubset;
+        chooseSubset = [&](size_t pos, int need, uint64_t chosenComps, uint64_t chosenStudents) {
+            if (need == 0) {
+                if (!violatesPartnerHistory(chosenStudents))
+                    total += countGroups(groupIndex + 1, remainingMask & ~chosenComps);
+                return;
+            }
+            if (pos >= remainingComponents.size()) return;
+
+            int remainingCapacity = 0;
+            for (size_t i = pos; i < remainingComponents.size(); ++i)
+                remainingCapacity += components[static_cast<size_t>(remainingComponents[i])].size;
+            if (remainingCapacity < need) return;
+
+            for (size_t i = pos; i < remainingComponents.size(); ++i) {
+                const int comp = remainingComponents[i];
+                const auto& component = components[static_cast<size_t>(comp)];
+                if (component.size > need) continue;
+                if (forbiddenGroup[static_cast<size_t>(comp)][static_cast<size_t>(groupIndex)]) continue;
+                if ((chosenComps & conflictMask[static_cast<size_t>(comp)]) != 0) continue;
+
+                const uint64_t nextChosenComps = chosenComps | (uint64_t{1} << comp);
+                const uint64_t nextChosenStudents = chosenStudents | component.studentMask;
+                if (violatesPartnerHistory(nextChosenStudents)) continue;
+                chooseSubset(i + 1, need - component.size, nextChosenComps, nextChosenStudents);
+            }
+        };
+
+        chooseSubset(0, targetSize, 0, 0);
+        memo.emplace(memoKey, total);
+        return total;
+    };
+
+    const uint64_t allComponentsMask =
+        componentCount >= 64 ? ~uint64_t{0} : ((uint64_t{1} << componentCount) - 1);
+    groupPermutationCacheKey_ = key;
+    groupPermutationCacheValue_ = FormatExactInteger(countGroups(0, allComponentsMask));
+    return groupPermutationCacheValue_;
 }
 
 bool SeatingChartApp::CandidateGroupsMeetConstraints(

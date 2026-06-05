@@ -137,6 +137,8 @@ private:
     std::unordered_map<std::wstring, int> groupPairHistory_;
     std::unordered_map<std::wstring, std::unordered_set<int>> groupNumberHistory_;
     std::unordered_map<std::wstring, std::vector<std::unordered_set<std::wstring>>> groupPartnerSetHistory_;
+    std::wstring groupPermutationCacheKey_;
+    std::wstring groupPermutationCacheValue_ = L"0";
 
     // --- Inline cell editing (floating overlay EDIT on rosterView) ---
     struct CellEdit {
@@ -218,6 +220,8 @@ private:
     [[nodiscard]] bool GroupAvoidSameNumberEnabled() const;
     [[nodiscard]] bool GroupAvoidSamePartnersEnabled() const;
     [[nodiscard]] std::vector<int> CurrentGroupPattern() const;
+    [[nodiscard]] std::wstring BuildGroupPermutationCacheKey() const;
+    [[nodiscard]] std::wstring ExactGroupPermutationText();
     [[nodiscard]] bool CandidateGroupsMeetConstraints(const std::vector<std::vector<std::wstring>>& groups) const;
     [[nodiscard]] long double EstimateGroupPermutations() const;
     void RecordGroupShuffleHistory(const std::vector<std::vector<std::wstring>>& groups);
