@@ -65,5 +65,8 @@ private:
     void UpdateScrollBar(HWND sidebar, int contentH, int viewH);
     void ClampScroll(HWND sidebar);
 
-    static void Defer(HDWP& dwp, HWND child, int x, int y, int w, int h);
+    // Defer for scrolled controls — clamps to scrollable band so controls can't
+    // paint over the fixed header or footer.  DeferFixed skips the clamp.
+    void Defer     (HDWP& dwp, HWND child, int x, int y, int w, int h);
+    void DeferFixed(HDWP& dwp, HWND child, int x, int y, int w, int h);
 };

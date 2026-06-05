@@ -6,8 +6,28 @@
 // Helpers
 // ---------------------------------------------------------------------------
 
+// DeferFixed — for the three FIXED header/footer controls (not scrolled).
+void SidebarManager::DeferFixed(HDWP& dwp, HWND child, int x, int y, int w, int h) {
+    if (!child || !dwp) return;
+    dwp = DeferWindowPos(dwp, child, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// Defer — for ALL scrolled content controls.
+// Any control whose Y range overlaps the fixed header (y < headerH_) or extends
+// past the scrollable bottom (y + h > headerH_ + viewH_) is moved above y = 0.
+// Win32 clips child windows to the parent's client area, so y < 0 means invisible —
+// the control is never destroyed, just temporarily out of view.
 void SidebarManager::Defer(HDWP& dwp, HWND child, int x, int y, int w, int h) {
     if (!child || !dwp) return;
+    if (viewH_ > buttonH_) { // scrollable region is meaningful
+        const int scrollBot = headerH_ + viewH_;
+        if (y < headerH_ || y + h > scrollBot) {
+            // Move above parent top edge — invisible, but never destroyed.
+            dwp = DeferWindowPos(dwp, child, nullptr, x, -(h + 4), w, h,
+                                 SWP_NOZORDER | SWP_NOACTIVATE);
+            return;
+        }
+    }
     dwp = DeferWindowPos(dwp, child, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
@@ -260,6 +280,9 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
                                    static_cast<int>(rc.bottom) - statusH);
     const int viewH     = std::max(1, scrollBot - scrollTop);
 
+    // Set viewH_ early so Defer()'s bounds check is live before layout functions run.
+    viewH_ = viewH;
+
     scroll_ = std::clamp(scroll_, 0, std::max(0, contentH_ - viewH));
     const int pw       = std::max(1, static_cast<int>(rc.right - rc.left) - padding * 2);
     const int px       = padding;
@@ -270,12 +293,12 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
 
     HDWP dwp = BeginDeferWindowPos(130);
 
-    // Fixed header (not scrolled)
-    Defer(dwp, c.titleLabel,   padding, padding,           pw, lineH_ * 2);
-    Defer(dwp, c.summaryLabel, padding, padding + lineH_ * 2 + gap_, pw, lineH_ * 3);
-    Defer(dwp, c.statusLabel,  padding,
-          std::max(padding, static_cast<int>(rc.bottom) - statusH + gap_),
-          pw, lineH_ * 2 + gap_);
+    // Fixed header and footer — use DeferFixed to bypass the scrollable-region clamp.
+    DeferFixed(dwp, c.titleLabel,   padding, padding,                        pw, lineH_ * 2);
+    DeferFixed(dwp, c.summaryLabel, padding, padding + lineH_ * 2 + gap_,    pw, lineH_ * 3);
+    DeferFixed(dwp, c.statusLabel,  padding,
+               std::max(padding, static_cast<int>(rc.bottom) - statusH + gap_),
+               pw, lineH_ * 2 + gap_);
 
     // Common strip (mode buttons, capture/print, templates) — always visible, scrolled
     int y = LayoutCommonStrip(dwp, c, px, pw, base, scrollUsed);
