@@ -42,6 +42,9 @@ public:
     void CancelInlineCellEdit();
     void AdvanceToNextStudent();   // Enter key: commit + open next row's first-name cell
     bool IsAddingNewStudent() const { return cellEdit_.isNew; }
+    // Called from subclass proc (must be public)
+    void CommitRuleCellEdit();
+    void CancelRuleCellEdit();
 
     static SeatingChartApp* FromHwnd(HWND hwnd) {
         return reinterpret_cast<SeatingChartApp*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -62,6 +65,8 @@ public:
 
     void SetStatus(const std::wstring& text);
     void InvalidateChart();                 // invalidate full chart area
+    void SetSnapGuides(std::vector<int> vert, std::vector<int> horiz);
+    void ClearSnapGuides();
     void RecomputeLayoutTransform();        // rebuild layoutTx_ from current room size
     void RefreshSelectionFlags() { selection_.RefreshSelectionFlags(); }
     void SyncLayoutInspector();             // SyncLayoutInspectorWithSelection(state, controls)
@@ -118,6 +123,10 @@ private:
     int  hoverItem_     = -1;
     bool trackingMouse_ = false;
 
+    // --- Layout drag priming (threshold before BeginDrag fires) ---
+    bool  layoutDragPrimed_   = false;
+    POINT layoutDragStartPt_  {};
+
     // --- Front-edge drag ---
     bool     draggingFront_          = false;
     RoomEdge frontDragOriginalEdge_  = RoomEdge::Top;
@@ -151,6 +160,16 @@ private:
     };
     CellEdit cellEdit_;
     void BeginInlineCellEdit(int item, int subItem);   // create floating edit
+
+    // --- Inline rule cell editing (floating CBS_DROPDOWN over keepApart/Together lists) ---
+    struct RuleCellEdit {
+        HWND combo   = nullptr; // the floating CBS_DROPDOWN combobox (child of sidebar)
+        int  row     = -1;      // index into restrictions or affinities
+        int  col     = -1;      // 0 = first name, 1 = second name
+        bool isApart = true;    // true = restrictions, false = affinities
+    };
+    RuleCellEdit ruleCellEdit_;
+    void BeginRuleCellEdit(int row, int col, bool isApart);
 
     // --- Roster drag assignment ---
     bool rosterDragPrimed_ = false;

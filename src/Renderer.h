@@ -27,6 +27,9 @@ struct DragPreviewState {
     LayoutSeatRef seat{ -1, -1 };
     POINT cursorPt{};
     std::wstring studentName;
+    // Smart alignment guide lines drawn during drag (screen coordinates)
+    std::vector<int> snapVertLines;   // screen X positions of vertical guides
+    std::vector<int> snapHorizLines;  // screen Y positions of horizontal guides
 };
 
 // ---------------------------------------------------------------------------

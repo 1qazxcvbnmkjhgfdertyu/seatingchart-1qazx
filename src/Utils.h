@@ -485,20 +485,26 @@ struct WindowUiMetrics {
     return def;
 }
 
-// Keep item.occupants sized to the seat count (preserving existing names).
+// Keep item.occupants and item.blockedSeats sized to the seat count.
 inline void EnsureSeatSlots(LayoutItem& item) {
     const size_t n = static_cast<size_t>(std::max(0, LayoutItemSeats(item)));
-    if (item.occupants.size() != n) item.occupants.resize(n);
+    if (item.occupants.size()    != n) item.occupants.resize(n);
+    if (item.blockedSeats.size() != n) item.blockedSeats.resize(n, false);
 }
 
 // Flatten every furniture seat into one ordered list of (item, slot) refs.
-// This is the canonical seat ordering used by roster fill and auto-assign.
+// Blocked seats are excluded so auto-assign and quick-fill skip them.
 [[nodiscard]] inline std::vector<LayoutSeatRef>
 EnumerateLayoutSeats(const std::vector<LayoutItem>& items) {
     std::vector<LayoutSeatRef> out;
-    for (int i = 0; i < static_cast<int>(items.size()); ++i)
-        for (int s = 0; s < static_cast<int>(items[static_cast<size_t>(i)].occupants.size()); ++s)
+    for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+        const auto& item = items[static_cast<size_t>(i)];
+        for (int s = 0; s < static_cast<int>(item.occupants.size()); ++s) {
+            if (s < static_cast<int>(item.blockedSeats.size()) && item.blockedSeats[s])
+                continue;
             out.push_back({ i, s });
+        }
+    }
     return out;
 }
 

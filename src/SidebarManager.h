@@ -74,7 +74,8 @@ private:
     int  LayoutRosterPanel (HDWP& dwp, const ControlHandles& c,
                              int px, int pw, int base, int scrollUsed);
     int  LayoutRulesPanel  (HDWP& dwp, const ControlHandles& c,
-                             int px, int pw, int base, int scrollUsed);
+                             int px, int pw, int base, int scrollUsed,
+                             const AppState& state);
     int  LayoutArrangePanel(HDWP& dwp, const ControlHandles& c,
                              int px, int pw, int base, int scrollUsed);
     int  LayoutGroupsPanel (HDWP& dwp, const ControlHandles& c,

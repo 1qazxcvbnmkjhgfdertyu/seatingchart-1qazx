@@ -441,6 +441,7 @@ AutoAssignSolution SolveAutoAssign(const AutoAssignInput& in,
     seatOrder.reserve(static_cast<size_t>(total));
     for (int s = 0; s < total; ++s)
         if (!used[static_cast<size_t>(s)]) seatOrder.push_back(s);
+    std::shuffle(seatOrder.begin(), seatOrder.end(), std::mt19937(std::random_device{}()));
 
     size_t steps = 0; bool limitHit = false;
     if (!Backtrack(0, order, seatOrder, restrictedByStudent,
@@ -768,6 +769,7 @@ bool BeginAutoAssign(HWND notifyWnd, const AppState& state,
         if (behavior) in.behaviorStudents.push_back(state.roster[i]);
     }
 
+    // fixedOccupants left empty: auto-assign reshuffles everyone freely each press.
     in.fixedOccupants.resize(static_cast<size_t>(total));
     in.seatCentres.resize(static_cast<size_t>(total));
     in.seatItem.resize(static_cast<size_t>(total));
@@ -778,8 +780,6 @@ bool BeginAutoAssign(HWND notifyWnd, const AppState& state,
         const int itemIdx = seats[static_cast<size_t>(k)].first;
         const int slot    = seats[static_cast<size_t>(k)].second;
         const LayoutItem& item = state.layoutItems[static_cast<size_t>(itemIdx)];
-        in.fixedOccupants[static_cast<size_t>(k)] =
-            item.occupants[static_cast<size_t>(slot)];
         in.seatItem[static_cast<size_t>(k)] = itemIdx;
 
         auto cit = centreCache.find(itemIdx);
@@ -793,19 +793,7 @@ bool BeginAutoAssign(HWND notifyWnd, const AppState& state,
                          (item.bounds.top  + item.bounds.bottom) / 2 };
     }
 
-    // Warm start from current occupants (for non-fixed, use as initial placement)
-    in.previousAssignments.resize(state.roster.size(), -1);
-    for (int i = 0; i < static_cast<int>(state.roster.size()); ++i) {
-        const auto& name = state.roster[i];
-        for (int k = 0; k < total; ++k) {
-            const int itemIdx = seats[static_cast<size_t>(k)].first;
-            const int slot = seats[static_cast<size_t>(k)].second;
-            if (state.layoutItems[static_cast<size_t>(itemIdx)].occupants[static_cast<size_t>(slot)] == name) {
-                in.previousAssignments[i] = k;
-                break;
-            }
-        }
-    }
+    // No warm-start: each press produces a fresh random assignment.
 
     threadHandle = CreateThread(nullptr, 0, AutoAssignThread, ctx, 0, nullptr);
     if (!threadHandle) { delete ctx; return false; }

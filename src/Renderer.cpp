@@ -781,10 +781,27 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
             }
             (void)singleSeatDesk;
 
-            // Seat occupants — full name centred on each seat (wrapped to 2 lines
-            // with ellipsis on overflow) on a rounded pill for legibility. Empty
-            // seats show a faint marker so they read as assignable.
-            {
+            // Blocked seat markers — always visible in both modes.
+            for (int s = 0; s < seatCount && s < static_cast<int>(seatCenters.size()); ++s) {
+                if (s >= static_cast<int>(item.blockedSeats.size()) || !item.blockedSeats[s])
+                    continue;
+                const POINT ctr = seatCenters[static_cast<size_t>(s)];
+                const int rr = std::max(Scale(7), 7);
+                HPEN grayPen = CreatePen(PS_SOLID, std::max(1, Scale(1)), RGB(160, 80, 80));
+                HGDIOBJ op = SelectObject(hdc, grayPen);
+                HGDIOBJ ob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                Rectangle(hdc, ctr.x - rr, ctr.y - rr, ctr.x + rr, ctr.y + rr);
+                MoveToEx(hdc, ctr.x - rr + Scale(2), ctr.y - rr + Scale(2), nullptr);
+                LineTo(hdc,   ctr.x + rr - Scale(2), ctr.y + rr - Scale(2));
+                MoveToEx(hdc, ctr.x + rr - Scale(2), ctr.y - rr + Scale(2), nullptr);
+                LineTo(hdc,   ctr.x - rr + Scale(2), ctr.y + rr - Scale(2));
+                SelectObject(hdc, ob);
+                SelectObject(hdc, op);
+                DeleteObject(grayPen);
+            }
+
+            // Seat occupants — only in Assign mode (not visible in Arrange mode).
+            if (state.chartMode != ChartMode::Layout) {
                 ScopedSelect nameFont(hdc, static_cast<HGDIOBJ>(uiFont_ ? uiFont_ : font));
                 for (int s = 0; s < seatCount &&
                                  s < static_cast<int>(seatCenters.size()); ++s) {
@@ -794,6 +811,9 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
                     const bool focused = state.selectedLayoutSeat &&
                         state.selectedLayoutSeat->first  == static_cast<int>(i) &&
                         state.selectedLayoutSeat->second == s;
+                    // Skip blocked seats — the X marker above already marks them.
+                    if (s < static_cast<int>(item.blockedSeats.size()) && item.blockedSeats[s])
+                        continue;
 
                     // Label box sized to the seat slot (with sensible fallback).
                     int bw = Scale(64), bh = Scale(34);
@@ -901,8 +921,8 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
                 DrawTextCentered(hdc, lk, L"L", RGB(255,255,255));
             }
 
-            // Rotation indicator (small text top-left when non-zero)
-            if (item.rotation != 0) {
+            // Rotation indicator (small text top-left when non-zero; arrange mode only)
+            if (state.chartMode == ChartMode::Layout && item.rotation != 0) {
                 const std::wstring rotLabel = std::to_wstring(item.rotation) + L"°";
                 RECT rl{ sr.left + Scale(2), sr.top + Scale(2),
                          sr.left + Scale(30), sr.top + Scale(14) };
@@ -916,6 +936,22 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
         // Keep-apart radius rings for the focused seat's occupant.
         DrawKeepApartRings(hdc, state, tx);
         PaintStudentDragPreview(hdc, state, tx, dragPreview);
+
+        // Smart alignment guide lines (shown while dragging to snap edges/centres)
+        if (!dragPreview.snapVertLines.empty() || !dragPreview.snapHorizLines.empty()) {
+            HPEN guidePen = CreatePen(PS_SOLID, std::max(1, Scale(1)), theme_.accent);
+            HGDIOBJ ogp = SelectObject(hdc, guidePen);
+            for (int sx : dragPreview.snapVertLines) {
+                MoveToEx(hdc, sx, chartBounds.top,    nullptr);
+                LineTo  (hdc, sx, chartBounds.bottom);
+            }
+            for (int sy : dragPreview.snapHorizLines) {
+                MoveToEx(hdc, chartBounds.left,  sy, nullptr);
+                LineTo  (hdc, chartBounds.right, sy);
+            }
+            SelectObject(hdc, ogp);
+            DeleteObject(guidePen);
+        }
 
         // Rubber-band selection rectangle (screen coords)
         if (rubberBand.right > rubberBand.left && rubberBand.bottom > rubberBand.top) {

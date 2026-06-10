@@ -118,6 +118,9 @@ constexpr int kInlineFirstEditId      = 6035;
 constexpr int kInlineLastEditId       = 6036;
 constexpr int kSaveStudentEditId      = 6037;
 
+// Inline rule cell edit (Rules tab — floating CBS_DROPDOWN over keepApart/Together lists)
+constexpr int kRuleCellComboId        = 6038;
+
 // Class strip (main window, not sidebar)
 constexpr int kClassStripId           = 6100;
 constexpr int kAddClassBtnId          = 6101;
@@ -127,6 +130,8 @@ constexpr int kLayoutXSpinId          = 3240;
 constexpr int kLayoutYSpinId          = 3241;
 constexpr int kLayoutWSpinId          = 3242;
 constexpr int kLayoutHSpinId          = 3243;
+constexpr int kShowAllObjectsId       = 3244;
+constexpr int kRenameLayoutItemId     = 3245;
 
 // ---------------------------------------------------------------------------
 // All UI control handles (plain data struct)
@@ -172,6 +177,7 @@ struct ControlHandles {
     HWND presetU = nullptr;
     HWND presetHorseshoe = nullptr;
     HWND toggleVisible = nullptr; // visibility toggle for selected
+    HWND showAllObjects = nullptr; // make every layout item visible
 
     // Layout mode — inspector
     HWND layoutInspectorLabel = nullptr, layoutNameLabel = nullptr, layoutLabelEdit = nullptr;

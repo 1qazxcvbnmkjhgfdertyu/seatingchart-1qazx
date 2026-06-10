@@ -14,20 +14,34 @@ void SidebarManager::DeferFixed(HDWP& dwp, HWND child, int x, int y, int w, int 
 }
 
 // Defer — for ALL scrolled content controls.
-// Any control whose Y range overlaps the fixed header (y < headerH_) or extends
-// past the scrollable bottom (y + h > headerH_ + viewH_) is moved above y = 0.
-// Win32 clips child windows to the parent's client area, so y < 0 means invisible —
-// the control is never destroyed, just temporarily out of view.
+// Controls completely outside the visible scroll band are moved off-screen.
+// Controls that straddle an edge are clamped so only their visible slice shows.
+// The fixed header/tab/footer controls are raised to HWND_TOP at the end of
+// Recalculate(), so they always paint on top of any clamped scrollable content.
 void SidebarManager::Defer(HDWP& dwp, HWND child, int x, int y, int w, int h) {
     if (!child || !dwp) return;
-    if (viewH_ > buttonH_) { // scrollable region is meaningful
-        const int scrollBand = headerH_ + tabH_; // content starts below header + tab strip
+    if (viewH_ > buttonH_) {
+        const int scrollBand = headerH_ + tabH_;
         const int scrollBot  = scrollBand + viewH_;
-        // Only hide when completely outside the visible band — partial overlap is fine;
-        // Win32 clips the child to the parent client area and the fixed-header controls
-        // (tab strip, title) paint on top due to higher Z-order.
+
+        // Completely outside the viewport — move off-screen.
         if (y + h <= scrollBand || y >= scrollBot) {
             dwp = DeferWindowPos(dwp, child, nullptr, x, -(h + 4), w, h,
+                                 SWP_NOZORDER | SWP_NOACTIVATE);
+            return;
+        }
+        // Partially above the top edge: push y down to scrollBand, shrink h.
+        if (y < scrollBand) {
+            h -= (scrollBand - y);
+            y  = scrollBand;
+        }
+        // Partially below the bottom edge: shrink h so bottom == scrollBot.
+        if (y + h > scrollBot) {
+            h = scrollBot - y;
+        }
+        // Degenerate after clamping (shouldn't happen, but guard anyway).
+        if (h <= 0) {
+            dwp = DeferWindowPos(dwp, child, nullptr, x, -(1 + 4), w, 1,
                                  SWP_NOZORDER | SWP_NOACTIVATE);
             return;
         }
@@ -46,7 +60,7 @@ void SidebarManager::RebuildMetrics(HWND sidebar, const Renderer& renderer) {
     sectionGap_ = m.sectionGap;
     headerH_    = std::max(lineH_ * 5 + gap_ * 3, Scale(96));
     tabH_       = std::max(lineH_ + Scale(10), Scale(28)); // tab strip row height
-    statusH_    = std::max(lineH_ * 5 + gap_ * 4, Scale(86));
+    statusH_    = std::max(lineH_ * 7 + gap_ * 5, Scale(120));
     scrollLine_ = buttonH_ + gap_;
 }
 
@@ -93,10 +107,24 @@ int SidebarManager::LayoutRosterPanel(HDWP& dwp, const ControlHandles& c,
     int y = base;
     auto rec = [&](int absY) { sectionDividers_.push_back(absY + scrollUsed); };
 
-    // Two-column student ListView — fills most of the panel
+    // Two-column student ListView — sized to show every row without an internal
+    // scrollbar.  SyncRosterView has already run, so GetItemCount is accurate.
+    // The sidebar's own scroll handles navigation; the list never needs to scroll itself.
     rec(y);
-    const int listH = std::max(lineH_ * 8, viewH_ - Scale(160));
-    Defer(dwp, c.rosterView, px, y, pw, std::max(Scale(60), listH)); y += std::max(Scale(60), listH) + gap_;
+    {
+        const int nItems = c.rosterView ? ListView_GetItemCount(c.rosterView) : 8;
+        // Use the ListView's own metric to get the exact row height at current DPI/font.
+        // ListView_ApproximateViewRect returns client-area height for item rows only
+        // (header excluded in LVS_REPORT mode), so we add lineH_*2 to cover the header
+        // row and the WS_EX_CLIENTEDGE border chrome at any DPI.
+        const DWORD approx = c.rosterView
+            ? ListView_ApproximateViewRect(c.rosterView, pw, -1, std::max(8, nItems))
+            : 0;
+        const int listH = approx
+            ? (static_cast<int>(HIWORD(approx)) + lineH_ * 2)
+            : lineH_ * (std::max(8, nItems) + 3) + Scale(8);
+        Defer(dwp, c.rosterView, px, y, pw, listH); y += listH + gap_;
+    }
 
     // Show last names toggle
     PlaceButtons(dwp, {c.showLastNamesBtn}, px, pw, y, Scale(110));
@@ -126,32 +154,50 @@ int SidebarManager::LayoutRosterPanel(HDWP& dwp, const ControlHandles& c,
 // ---------------------------------------------------------------------------
 
 int SidebarManager::LayoutRulesPanel(HDWP& dwp, const ControlHandles& c,
-                                      int px, int pw, int base, int scrollUsed) {
+                                      int px, int pw, int base, int scrollUsed,
+                                      const AppState& state) {
     int y = base;
     auto rec = [&](int absY) { sectionDividers_.push_back(absY + scrollUsed); };
-    const int pairListH = std::max(lineH_ * 4, Scale(60));
+
+    // Dynamic list height: size each ListView to show all its rows without internal
+    // scrolling.  totalRows = max(3, realCount + 1) mirrors what SyncRulesLists inserts.
+    // Use ListView_ApproximateViewRect for the exact row height at current DPI/font.
+    // LVS_NOSCROLL means the list never shows an internal scrollbar even if clipped.
+    auto rulesListH = [&](const std::vector<Restriction>& rules, HWND lv) -> int {
+        const int n = std::max(3, static_cast<int>(rules.size()) + 1);
+        if (lv) {
+            const DWORD approx = ListView_ApproximateViewRect(lv, pw, -1, n);
+            if (approx) return static_cast<int>(HIWORD(approx)) + lineH_ * 2;
+        }
+        return lineH_ * (n + 2) + Scale(8);
+    };
 
     // Keep Apart section
     rec(y);
     Defer(dwp, c.keepApartHeader, px, y, pw, labelH_); y += labelH_ + gap_;
-    Defer(dwp, c.keepApartDesc,   px, y, pw, labelH_); y += labelH_ + gap_;
-    Defer(dwp, c.keepApartList,   px, y, pw, pairListH); y += pairListH + gap_;
-    PlaceButtons(dwp, {c.addKeepApartBtn, c.remKeepApartBtn}, px, pw, y, Scale(80));
+    {
+        const int h = rulesListH(state.restrictions, c.keepApartList);
+        Defer(dwp, c.keepApartList, px, y, pw, h); y += h + gap_;
+    }
+    PlaceButtons(dwp, {c.remKeepApartBtn}, px, pw, y, Scale(80));
     y += sectionGap_;
 
     // Keep Together section
     rec(y);
     Defer(dwp, c.keepTogetherHeader, px, y, pw, labelH_); y += labelH_ + gap_;
-    Defer(dwp, c.keepTogetherDesc,   px, y, pw, labelH_); y += labelH_ + gap_;
-    Defer(dwp, c.keepTogetherList,   px, y, pw, pairListH); y += pairListH + gap_;
-    PlaceButtons(dwp, {c.addKeepTogetherBtn, c.remKeepTogetherBtn}, px, pw, y, Scale(80));
+    {
+        const int h = rulesListH(state.affinities, c.keepTogetherList);
+        Defer(dwp, c.keepTogetherList, px, y, pw, h); y += h + gap_;
+    }
+    PlaceButtons(dwp, {c.remKeepTogetherBtn}, px, pw, y, Scale(80));
     y += sectionGap_;
 
-    // Desk Tag Rules placeholder
+    // Desk Tag Rules placeholder (unchanged)
     rec(y);
     Defer(dwp, c.deskTagHeader, px, y, pw, labelH_); y += labelH_ + gap_;
     Defer(dwp, c.deskTagDesc,   px, y, pw, labelH_ * 2); y += labelH_ * 2 + gap_;
-    Defer(dwp, c.deskTagList,   px, y, pw, pairListH); y += pairListH + gap_;
+    const int deskListH = std::max(lineH_ * 4, Scale(60));
+    Defer(dwp, c.deskTagList,   px, y, pw, deskListH); y += deskListH + gap_;
     PlaceButtons(dwp, {c.addDeskTagRuleBtn, c.remDeskTagRuleBtn}, px, pw, y, Scale(92));
     y += sectionGap_;
 
@@ -183,7 +229,35 @@ int SidebarManager::LayoutArrangePanel(HDWP& dwp, const ControlHandles& c,
     y += sectionGap_;
 
     rec(y);
-    PlaceButtons(dwp, {c.quickFillSeats}, px, pw, y, Scale(120));
+    PlaceButtons(dwp, {c.quickFillSeats, c.showAllObjects}, px, pw, y, Scale(110));
+    y += sectionGap_;
+
+    rec(y);
+    Defer(dwp, c.layoutInspectorLabel, px, y, pw, labelH_); y += labelH_ + gap_;
+    {
+        const int lw    = Scale(42);
+        const int spinW = Scale(18);
+        auto spinRow = [&](HWND lbl, HWND edt, HWND spn) {
+            const int ew = pw - lw - gap_ - spinW;
+            Defer(dwp, lbl, px,                      y, lw,    editH_);
+            Defer(dwp, edt, px + lw + gap_,          y, ew,    editH_);
+            Defer(dwp, spn, px + lw + gap_ + ew,     y, spinW, editH_);
+            y += editH_ + gap_;
+        };
+        auto editRow = [&](HWND lbl, HWND edt) {
+            const int ew = pw - lw - gap_;
+            Defer(dwp, lbl, px,             y, lw, editH_);
+            Defer(dwp, edt, px + lw + gap_, y, ew, editH_);
+            y += editH_ + gap_;
+        };
+        editRow(c.layoutNameLabel,     c.layoutLabelEdit);
+        spinRow(c.layoutXLabel,        c.layoutXEdit,      c.layoutXSpin);
+        spinRow(c.layoutYLabel,        c.layoutYEdit,      c.layoutYSpin);
+        spinRow(c.layoutWidthLabel,    c.layoutWidthEdit,  c.layoutWSpin);
+        spinRow(c.layoutHeightLabel,   c.layoutHeightEdit, c.layoutHSpin);
+        editRow(c.layoutCapacityLabel, c.layoutCapacityEdit);
+    }
+    Defer(dwp, c.applyLayoutItem, px, y, pw, buttonH_); y += buttonH_ + gap_;
     y += sectionGap_;
 
     return y;
@@ -297,11 +371,13 @@ void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode 
                    c.showLastNamesBtn})
         if (h) ShowWindow(h, onRoster ? SW_SHOW : SW_HIDE);
 
-    // Rules tab
+    // Rules tab — the + Add buttons are intentionally omitted here; ghost rows handle
+    // new-rule creation inline.  They are handled in the explicit blocks below so
+    // they remain visible only in the Groups tab (where they're still needed).
     for (HWND h : {c.keepApartHeader, c.keepApartDesc, c.keepApartList,
-                   c.addKeepApartBtn, c.remKeepApartBtn,
+                   c.remKeepApartBtn,
                    c.keepTogetherHeader, c.keepTogetherDesc, c.keepTogetherList,
-                   c.addKeepTogetherBtn, c.remKeepTogetherBtn,
+                   c.remKeepTogetherBtn,
                    c.deskTagHeader, c.deskTagDesc, c.deskTagList,
                    c.addDeskTagRuleBtn, c.remDeskTagRuleBtn})
         if (h) ShowWindow(h, onRules ? SW_SHOW : SW_HIDE);
@@ -312,7 +388,15 @@ void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode 
                    c.layoutTransformLabel, c.deleteLayout, c.duplicateLayoutItem, c.lockItem,
                    c.rotateCW, c.rotateCCW, c.flipH, c.selectAllLayout,
                    c.toggleVisible, c.sendLayoutBack, c.bringLayoutFront,
-                   c.quickFillSeats})
+                   c.quickFillSeats, c.showAllObjects,
+                   c.layoutInspectorLabel,
+                   c.layoutNameLabel, c.layoutLabelEdit,
+                   c.layoutXLabel, c.layoutXEdit, c.layoutXSpin,
+                   c.layoutYLabel, c.layoutYEdit, c.layoutYSpin,
+                   c.layoutWidthLabel, c.layoutWidthEdit, c.layoutWSpin,
+                   c.layoutHeightLabel, c.layoutHeightEdit, c.layoutHSpin,
+                   c.layoutCapacityLabel, c.layoutCapacityEdit,
+                   c.applyLayoutItem})
         if (h) ShowWindow(h, onArrange ? SW_SHOW : SW_HIDE);
 
     // Groups tab
@@ -323,48 +407,19 @@ void SidebarManager::UpdateControlVisibility(const ControlHandles& c, ChartMode 
         if (h) ShowWindow(h, onGroups ? SW_SHOW : SW_HIDE);
     if (c.keepApartList) ShowWindow(c.keepApartList,
         (onRules || (onGroups && !groupKeepApartCollapsed_)) ? SW_SHOW : SW_HIDE);
+    // + Add buttons: only on Groups tab (rules tab uses ghost rows instead).
     if (c.addKeepApartBtn) ShowWindow(c.addKeepApartBtn,
-        (onRules || (onGroups && !groupKeepApartCollapsed_)) ? SW_SHOW : SW_HIDE);
+        (onGroups && !groupKeepApartCollapsed_) ? SW_SHOW : SW_HIDE);
     if (c.remKeepApartBtn) ShowWindow(c.remKeepApartBtn,
         (onRules || (onGroups && !groupKeepApartCollapsed_)) ? SW_SHOW : SW_HIDE);
     if (c.keepTogetherList) ShowWindow(c.keepTogetherList,
         (onRules || (onGroups && !groupKeepTogetherCollapsed_)) ? SW_SHOW : SW_HIDE);
     if (c.addKeepTogetherBtn) ShowWindow(c.addKeepTogetherBtn,
-        (onRules || (onGroups && !groupKeepTogetherCollapsed_)) ? SW_SHOW : SW_HIDE);
+        (onGroups && !groupKeepTogetherCollapsed_) ? SW_SHOW : SW_HIDE);
     if (c.remKeepTogetherBtn) ShowWindow(c.remKeepTogetherBtn,
         (onRules || (onGroups && !groupKeepTogetherCollapsed_)) ? SW_SHOW : SW_HIDE);
 
-    // Always hidden — old text-box controls replaced by structured UI
-    for (HWND h : {c.rosterEdit, c.rosterFilter, c.restrictionEdit, c.applyRules,
-                   c.rosterLabel,
-                   // Add/Remove buttons replaced by right-click context menu
-                   c.addStudentBtn, c.removeStudentBtn,
-                   // Bottom edit fields replaced by true inline cell editing
-                   c.inlineFirstEdit, c.inlineLastEdit, c.saveStudentEdit,
-                   // Export/template buttons removed from Arrange tab (still in File menu)
-                   c.captureChart, c.exportChart, c.printChart, c.exportCsv,
-                   c.seatingReport, c.exportHtml, c.saveTemplateBtn, c.loadTemplateBtn,
-                   // Old groups size spinner replaced by combobox
-                   c.groupSizeEdit, c.groupSizeSpin, c.groupConfigList,
-                   // Retired text/list based groups rule UI
-                   c.groupsOutputList, c.groupRulesLabel, c.groupRulesEdit, c.groupRulesApply})
-        if (h) ShowWindow(h, SW_HIDE);
-
-    // Always hidden — retired sidebar controls
-    for (HWND h : {c.modeLabel, c.seatMode, c.layoutMode,
-                   c.mergeSelected,
-                   c.alignLabel, c.alignLeft, c.alignRight, c.alignTop, c.alignBottom,
-                   c.alignCenterH, c.alignCenterV, c.distributeH, c.distributeV,
-                   c.presetRows, c.presetU, c.presetHorseshoe,
-                   c.layoutInspectorLabel, c.layoutNameLabel, c.layoutLabelEdit,
-                   c.layoutXLabel, c.layoutYLabel, c.layoutWidthLabel, c.layoutHeightLabel,
-                   c.layoutXEdit, c.layoutYEdit, c.layoutWidthEdit, c.layoutHeightEdit,
-                   c.layoutCapacityLabel, c.layoutCapacityEdit, c.applyLayoutItem,
-                   c.layoutXSpin, c.layoutYSpin, c.layoutWSpin, c.layoutHSpin,
-                   c.roomSizeLabel, c.roomWidthLabel, c.roomWidthEdit,
-                   c.roomHeightLabel, c.roomHeightEdit, c.applyRoomSize,
-                   c.frontEdgeLabel, c.frontEdgeButton})
-        if (h) ShowWindow(h, SW_HIDE);
+    // Retired controls are never created (handles are nullptr), so no hide loops needed.
 }
 
 // ---------------------------------------------------------------------------
@@ -415,10 +470,12 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
     // Fixed: title, summary, footer — bypass scrollable-region clamp
     DeferFixed(dwp, c.titleLabel,   padding, padding,                     pw, lineH_ * 2);
     DeferFixed(dwp, c.summaryLabel, padding, padding + lineH_ * 2 + gap_, pw, lineH_ * 3);
-    const int footerTop = std::max(padding, static_cast<int>(rc.bottom) - statusH + gap_);
-    DeferFixed(dwp, c.statusLabel,  padding, footerTop, pw, lineH_ + gap_);
-    DeferFixed(dwp, c.footerMetaLabel, padding, footerTop + lineH_ + gap_, pw, lineH_ + gap_);
-    DeferFixed(dwp, c.footerProgress, padding, footerTop + (lineH_ + gap_) * 2, pw, std::max(Scale(12), lineH_));
+    const int footerTop    = std::max(padding, static_cast<int>(rc.bottom) - statusH + gap_);
+    const int statusSlot   = lineH_ * 2;          // 2-line height for status text
+    const int metaSlot     = lineH_ * 2;          // 2-line height for meta/hint text
+    DeferFixed(dwp, c.statusLabel,     padding, footerTop,                                    pw, statusSlot);
+    DeferFixed(dwp, c.footerMetaLabel, padding, footerTop + statusSlot + gap_,               pw, metaSlot);
+    DeferFixed(dwp, c.footerProgress,  padding, footerTop + statusSlot + gap_ + metaSlot + gap_, pw, std::max(Scale(12), lineH_));
 
     // Fixed: tab control spans the full panel width, flush below the header
     DeferFixed(dwp, c.tabControl, 0, headerH_,
@@ -428,7 +485,7 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
     int contentBottom = base;
     switch (activeTab_) {
     case 0: contentBottom = LayoutRosterPanel (dwp, c, px, pw, base, scrollUsed); break;
-    case 1: contentBottom = LayoutRulesPanel  (dwp, c, px, pw, base, scrollUsed); break;
+    case 1: contentBottom = LayoutRulesPanel  (dwp, c, px, pw, base, scrollUsed, state); break;
     case 2: contentBottom = LayoutArrangePanel(dwp, c, px, pw, base, scrollUsed); break;
     case 3: contentBottom = LayoutGroupsPanel (dwp, c, px, pw, base, scrollUsed); break;
     }
@@ -454,7 +511,10 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
         return;
     }
 
-    RedrawWindow(sidebar, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+    // Invalidate without forcing an erase-first on every child.  Dropping RDW_ERASE
+    // prevents the white-flash each child produces during fast trackpad/touch scrolling.
+    // Controls repaint at their new positions via the invalidation DeferWindowPos raises.
+    RedrawWindow(sidebar, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
 }
 
 // ---------------------------------------------------------------------------
@@ -464,27 +524,15 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
 void SidebarManager::ScrollTo(HWND sidebar, int newPos) {
     const int maxScroll = std::max(0, contentH_ - viewH_);
     newPos = std::clamp(newPos, 0, maxScroll);
-    const int delta = newPos - scroll_;
-    if (delta == 0) return;
-
-    RECT rc{}; GetClientRect(sidebar, &rc);
-    const int top = headerH_, bot = std::max(top, static_cast<int>(rc.bottom - statusH_));
-    RECT sr{0, top, rc.right, bot};
+    if (newPos == scroll_) return;
 
     scroll_ = newPos;
+
+    // Just update the scrollbar position. Recalculate() (always called by the
+    // caller immediately after) repositions all child HWNDs and redraws, so
+    // ScrollWindowEx is unnecessary and only produces extra repaint artifacts.
     SCROLLINFO si{sizeof(si), SIF_POS, 0, 0, 0, scroll_};
     SetScrollInfo(sidebar, SB_VERT, &si, TRUE);
-
-    if (std::abs(delta) < std::max(1, viewH_)) {
-        // SW_SCROLLCHILDREN is intentionally omitted — Recalculate (called by the
-        // parent after ScrollTo) repositions all child HWNDs atomically, so we
-        // only need to scroll the background pixels here. Including SW_SCROLLCHILDREN
-        // would temporarily move the fixed header/footer labels into the scrollable
-        // region before Recalculate corrects them, causing a visible clipping artifact.
-        ScrollWindowEx(sidebar, 0, -delta, &sr, &sr, nullptr, nullptr,
-                       SW_INVALIDATE | SW_ERASE);
-        RedrawWindow(sidebar, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
-    }
 }
 
 void SidebarManager::HandleVScroll(HWND sidebar, WPARAM wParam,

@@ -27,6 +27,7 @@ struct LayoutItem {
     bool           flipped   = false;
     int            capacity  = 0;
     std::vector<std::wstring> occupants;
+    std::vector<bool>        blockedSeats; // true = seat is closed/non-seatable
     bool           visible   = true; // for layer visibility toggle
     int            groupId   = 0;    // 0 = ungrouped; matching ids move/select together
 };

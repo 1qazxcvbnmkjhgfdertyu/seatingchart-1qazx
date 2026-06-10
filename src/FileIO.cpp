@@ -230,6 +230,13 @@ std::string BuildStateJson(const AppState& s) {
         njson occ = njson::array();
         for (const auto& name : item.occupants) occ.push_back(WideToUtf8(name));
         li["occupants"] = std::move(occ);
+        bool anyBlocked = false;
+        for (bool b : item.blockedSeats) if (b) { anyBlocked = true; break; }
+        if (anyBlocked) {
+            njson blk = njson::array();
+            for (bool b : item.blockedSeats) blk.push_back(b);
+            li["blocked_seats"] = std::move(blk);
+        }
         njson bounds = njson::array();
         bounds.push_back(static_cast<int>(item.bounds.left));
         bounds.push_back(static_cast<int>(item.bounds.top));
@@ -426,7 +433,12 @@ bool LoadStateFromJson(const std::string& text, AppState* out) {
                 for (const auto& nm : li["occupants"])
                     item.occupants.push_back(Utf8ToWide(nm.is_string()
                         ? nm.get<std::string>() : std::string{}));
-            EnsureSeatSlots(item);   // size occupants[] to the seat count
+            EnsureSeatSlots(item);   // size occupants[] and blockedSeats[] to seat count
+            if (li.contains("blocked_seats") && li["blocked_seats"].is_array()) {
+                const auto& blkArr = li["blocked_seats"];
+                for (size_t k = 0; k < blkArr.size() && k < item.blockedSeats.size(); ++k)
+                    if (blkArr[k].is_boolean()) item.blockedSeats[k] = blkArr[k].get<bool>();
+            }
             layoutItems.push_back(std::move(item));
         }
 

@@ -710,8 +710,60 @@ void LayoutEditor::UpdateDrag(POINT screenPt) {
     auto& priItem = state_.layoutItems[priIdx];
     const int w  = static_cast<int>(priItem.bounds.right  - priItem.bounds.left);
     const int h  = static_cast<int>(priItem.bounds.bottom - priItem.bounds.top);
-    const int newL = std::clamp(static_cast<int>(roomPt.x) - static_cast<int>(dragOffset_.x), 0, rW - w);
-    const int newT = std::clamp(static_cast<int>(roomPt.y) - static_cast<int>(dragOffset_.y), 0, rH - h);
+    int newL = std::clamp(static_cast<int>(roomPt.x) - static_cast<int>(dragOffset_.x), 0, rW - w);
+    int newT = std::clamp(static_cast<int>(roomPt.y) - static_cast<int>(dragOffset_.y), 0, rH - h);
+
+    // Smart alignment guides: snap to edges/centres of non-selected items (single drag only).
+    std::vector<int> snapVert, snapHoriz;
+    if (state_.selectedLayoutItems.size() == 1 && tx_.scale > 0.01) {
+        const int thresh = std::max(3, static_cast<int>(8.0 / tx_.scale));
+        int bestXdist = thresh + 1, bestYdist = thresh + 1;
+        int bestXadj = 0, bestYadj = 0;
+        int guideX = -1, guideY = -1;
+
+        for (size_t j = 0; j < state_.layoutItems.size(); ++j) {
+            if (static_cast<int>(j) == static_cast<int>(priIdx)) continue;
+            const RECT& ob = state_.layoutItems[j].bounds;
+            const int ocx = (static_cast<int>(ob.left) + static_cast<int>(ob.right))  / 2;
+            const int ocy = (static_cast<int>(ob.top)  + static_cast<int>(ob.bottom)) / 2;
+            const int ncx = newL + w / 2;
+            const int ncy = newT + h / 2;
+
+            // X: try aligning each dragging-item edge to each target edge
+            const int xSrcs[] = { newL, newL+w, newL, newL+w, ncx };
+            const int xTgts[] = { (int)ob.left, (int)ob.right, (int)ob.right, (int)ob.left, ocx };
+            for (int k = 0; k < 5; ++k) {
+                const int d = std::abs(xSrcs[k] - xTgts[k]);
+                if (d <= thresh && d < bestXdist) {
+                    bestXdist = d;
+                    bestXadj  = xTgts[k] - xSrcs[k];
+                    guideX    = xTgts[k];
+                }
+            }
+            // Y: same pattern
+            const int ySrcs[] = { newT, newT+h, newT, newT+h, ncy };
+            const int yTgts[] = { (int)ob.top, (int)ob.bottom, (int)ob.bottom, (int)ob.top, ocy };
+            for (int k = 0; k < 5; ++k) {
+                const int d = std::abs(ySrcs[k] - yTgts[k]);
+                if (d <= thresh && d < bestYdist) {
+                    bestYdist = d;
+                    bestYadj  = yTgts[k] - ySrcs[k];
+                    guideY    = yTgts[k];
+                }
+            }
+        }
+
+        if (bestXdist <= thresh) {
+            newL = std::clamp(newL + bestXadj, 0, rW - w);
+            snapVert.push_back(tx_.roomScreenRect.left + static_cast<int>(guideX * tx_.scale));
+        }
+        if (bestYdist <= thresh) {
+            newT = std::clamp(newT + bestYadj, 0, rH - h);
+            snapHoriz.push_back(tx_.roomScreenRect.top + static_cast<int>(guideY * tx_.scale));
+        }
+    }
+    app_.SetSnapGuides(std::move(snapVert), std::move(snapHoriz));
+
     const int dl   = newL - static_cast<int>(dragOriginalBounds_.left);
     const int dt   = newT - static_cast<int>(dragOriginalBounds_.top);
     priItem.bounds = { newL, newT, newL+w, newT+h };
@@ -815,6 +867,7 @@ void LayoutEditor::UpdateResize(POINT screenPt, bool keepAspect) {
 void LayoutEditor::EndDrag() {
     if (!dragging_ && !resizing_) return;
 
+    app_.ClearSnapGuides();
     const bool wasResizing = resizing_;
     dragging_ = resizing_ = false;
     activeHandle_ = ResizeHandle::None;
@@ -931,6 +984,7 @@ void LayoutEditor::EndRotate() {
 
 void LayoutEditor::CancelEdit(bool doRelease) {
     if (!dragging_ && !resizing_ && !rotating_) return;
+    app_.ClearSnapGuides();
     const bool wasRotating = rotating_;
     dragging_ = resizing_ = rotating_ = false;
     activeHandle_ = ResizeHandle::None;
