@@ -494,6 +494,18 @@ void SidebarManager::Recalculate(HWND sidebar, const AppState& state,
 
     if (dwp) EndDeferWindowPos(dwp);
 
+    // Belt-and-suspenders: after Defer may have shrunk a ListView during scroll,
+    // force all sidebar ListViews to hide both scrollbars.  LVS_NOSCROLL prevents
+    // the control from *adding* scrollbars internally, but if the OS briefly set
+    // one during the resize window (e.g. during DeferWindowPos commit), this hides
+    // it immediately.  This is called after EndDeferWindowPos so sizes are final.
+    for (HWND lv : {c.rosterView, c.keepApartList, c.keepTogetherList, c.deskTagList}) {
+        if (lv) {
+            ShowScrollBar(lv, SB_VERT, FALSE);
+            ShowScrollBar(lv, SB_HORZ, FALSE);
+        }
+    }
+
     // Auto-resize ListView columns to fit available width
     ResizeListViewColumns(c, static_cast<int>(rc.right - rc.left));
 

@@ -30,6 +30,9 @@ constexpr int kSidebarMaxWidth = 520;
 constexpr int kSidebarSplitterWidth = 6;
 constexpr UINT WM_APP_LAYOUT_FLOATING_TOOLS = WM_APP + 20;
 constexpr UINT WM_APP_INSPECTOR_SPIN        = WM_APP + 21;
+// Sent by SidebarScrollFwdProc when it converts a WM_GESTURE/GID_PAN event into
+// a direct pixel-delta scroll.  wParam = signed int delta (pixels, positive = down).
+constexpr UINT WM_APP_GESTURE_SCROLL        = WM_APP + 22;
 
 static bool IsCommandActivation(int notif) {
     return notif == 0 || notif == BN_CLICKED;
@@ -457,13 +460,40 @@ LRESULT CALLBACK SidebarScrollFwdProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             return 0; // consumed — don't let the list scroll itself
         }
     }
-    // Forward touch-pan gestures to the sidebar.  DefWindowProc on the sidebar
-    // (which has WS_VSCROLL) converts GID_PAN → WM_VSCROLL automatically, so
-    // we don't need explicit pan-delta maths here.  Returning the sidebar's
-    // result also closes the HGESTUREINFO handle (DefWindowProc does this).
+    // Convert touch-pan gestures into pixel-accurate sidebar scroll.
+    //
+    // We CANNOT forward the raw WM_GESTURE message to a different window:
+    // DefWindowProcW validates that hwndTarget inside the HGESTUREINFO matches
+    // the window being called, and crashes with 0xC0000005 when they differ
+    // (the HGESTUREINFO was created for the ListView, not the sidebar).
+    //
+    // Instead: read the gesture data, close the handle ourselves, compute the
+    // finger-movement delta, and post WM_APP_GESTURE_SCROLL to the sidebar.
+    // That handler calls ScrollTo directly for a 1:1 touch-to-scroll feel.
     if (msg == WM_GESTURE) {
-        if (HWND sidebar = reinterpret_cast<HWND>(refData))
-            return SendMessageW(sidebar, WM_GESTURE, wParam, lParam);
+        GESTUREINFO gi{sizeof(gi)};
+        if (GetGestureInfo(reinterpret_cast<HGESTUREINFO>(lParam), &gi) &&
+            gi.dwID == GID_PAN) {
+            CloseGestureInfoHandle(reinterpret_cast<HGESTUREINFO>(lParam));
+            if (HWND sidebar = reinterpret_cast<HWND>(refData)) {
+                // lastPanY: thread_local is fine for single-finger touch.
+                static thread_local int lastPanY = 0;
+                if (gi.dwFlags & GF_BEGIN) {
+                    lastPanY = static_cast<int>(gi.ptsLocation.y);
+                } else {
+                    const int curY  = static_cast<int>(gi.ptsLocation.y);
+                    const int delta = lastPanY - curY; // +ve = finger up = scroll down
+                    lastPanY = curY;
+                    if (delta != 0)
+                        SendMessageW(sidebar, WM_APP_GESTURE_SCROLL,
+                                     static_cast<WPARAM>(delta), 0);
+                }
+            }
+        } else {
+            // Non-pan gesture or GetGestureInfo failed — always close the handle.
+            CloseGestureInfoHandle(reinterpret_cast<HGESTUREINFO>(lParam));
+        }
+        return 0; // consume: prevent ListView from doing its own touch scroll
     }
     if (msg == WM_NCDESTROY)
         RemoveWindowSubclass(hwnd, SidebarScrollFwdProc, kSidebarScrollFwdId);
@@ -4805,7 +4835,16 @@ LRESULT SeatingChartApp::HandleSidebarMessage(HWND sidebar, UINT msg,
                                                WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_SIZE:
-        sidebar_.Recalculate(sidebar, state_, controls_, renderer_);
+        // Guard against re-entrance: MoveWindow(sidebar) inside RecalculateLayout
+        // fires WM_SIZE on the sidebar synchronously, which would call Recalculate
+        // a second time before the first call finishes.  The flag suppresses that
+        // duplicate.  RecalculateLayout always calls Recalculate explicitly after
+        // MoveWindow, so no layout pass is lost.
+        if (!sidebarRecalculating_) {
+            sidebarRecalculating_ = true;
+            sidebar_.Recalculate(sidebar, state_, controls_, renderer_);
+            sidebarRecalculating_ = false;
+        }
         return 0;
     case WM_VSCROLL:
         sidebar_.HandleVScroll(sidebar, wParam, state_, controls_, renderer_);
@@ -4814,6 +4853,14 @@ LRESULT SeatingChartApp::HandleSidebarMessage(HWND sidebar, UINT msg,
         sidebar_.HandleMouseWheel(sidebar, GET_WHEEL_DELTA_WPARAM(wParam),
                                    state_, controls_, renderer_);
         return 0;
+    case WM_APP_GESTURE_SCROLL: {
+        // Fired by SidebarScrollFwdProc after decoding a GID_PAN gesture.
+        // wParam is the signed pixel delta (positive = finger moved up = scroll down).
+        const int delta = static_cast<int>(wParam);
+        sidebar_.ScrollTo(sidebar, sidebar_.ScrollOffset() + delta);
+        sidebar_.Recalculate(sidebar, state_, controls_, renderer_);
+        return 0;
+    }
     case WM_NOTIFY: {
         auto* hdr = reinterpret_cast<NMHDR*>(lParam);
         if (hdr->idFrom == kTabControlId && hdr->code == TCN_SELCHANGE) {

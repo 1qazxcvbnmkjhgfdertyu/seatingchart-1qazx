@@ -96,7 +96,8 @@ private:
     HWND objectInspectorWindow_ = nullptr;
     UINT dpi_  = 96;
     int  sidebarWidth_ = 0;
-    bool resizingSidebar_ = false;
+    bool resizingSidebar_      = false;
+    bool sidebarRecalculating_ = false; // re-entrance guard for HandleSidebarMessage(WM_SIZE)
 
     // --- Auto-assign ---
     bool              aaRunning_       = false;
