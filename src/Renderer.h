@@ -117,8 +117,10 @@ private:
     mutable bool       backBufferInUse_ = false;
     mutable std::unordered_map<COLORREF, HBRUSH> colorBrushCache_;
     mutable std::unordered_map<int, HFONT>        groupFontCache_;  // zoom_key→scaled font
+    mutable std::unordered_map<int, HFONT>        seatNameFontCache_; // pixel_height→font
 
     HFONT GetGroupFont(float zoom) const;
+    HFONT GetSeatNameFont(int pixelHeight) const;
 
     void RebuildResources();
     void DestroyResources();

@@ -216,6 +216,25 @@ std::string BuildStateJson(const AppState& s) {
         j["group_affinities"].push_back(grp);
     }
 
+    // Group-specific keep-apart / keep-together rules + the "share with seating"
+    // flags (optional; absent in older saves → defaults to sharing seating rules).
+    j["group_use_seating_apart"]    = s.groupUseSeatingApart;
+    j["group_use_seating_together"] = s.groupUseSeatingTogether;
+    j["group_restrictions"] = njson::array();
+    for (const auto& r : s.groupRestrictions) {
+        njson entry;
+        entry["first"]  = WideToUtf8(r.first);
+        entry["second"] = WideToUtf8(r.second);
+        j["group_restrictions"].push_back(entry);
+    }
+    j["group_must_together"] = njson::array();
+    for (const auto& t : s.groupMustTogether) {
+        njson entry;
+        entry["first"]  = WideToUtf8(t.first);
+        entry["second"] = WideToUtf8(t.second);
+        j["group_must_together"].push_back(entry);
+    }
+
     j["layout_items"] = njson::array();
     for (const auto& item : s.layoutItems) {
         njson li;
@@ -329,16 +348,22 @@ bool LoadStateFromJson(const std::string& text, AppState* out) {
         std::vector<Restriction> restrictions;
         restrictions.reserve(restrArr.size());
         for (const auto& r : restrArr) {
-            if (!r.is_object()) return false;
+            if (!r.is_object()) continue; // skip corrupt rows, never reject the file
             const auto first  = Utf8ToWide(r.value("first",  std::string{}));
             const auto second = Utf8ToWide(r.value("second", std::string{}));
             const auto cf = CanonicalName(first), cs = CanonicalName(second);
-            if (cf.empty() || cs.empty() || cf == cs) return false;
-            const int radius = r.value("radius", 0);
-            if (radius < 0) return false;
+            // Partial rules (one side still blank) are a legitimate saved state —
+            // the rules editor fills one cell at a time and autosaves in between.
+            // Rejecting the whole file here (old behaviour: `return false`) wiped
+            // the entire class state on the next launch after a partial save.
+            if (cf.empty() && cs.empty()) continue; // fully blank row is useless
+            if (!cf.empty() && cf == cs)  continue; // same student on both sides
             Restriction rule{first, second};
-            rule.radius = radius;
-            restrictions.push_back(NormalizeRestriction(std::move(rule)));
+            rule.radius = std::max(0, r.value("radius", 0));
+            // Keep the user's column order for partial rules; normalize complete ones.
+            if (!cf.empty() && !cs.empty())
+                rule = NormalizeRestriction(std::move(rule));
+            restrictions.push_back(std::move(rule));
         }
 
         // --- affinities (optional soft "sit near" prefs; lenient on bad rows) ---
@@ -366,8 +391,12 @@ bool LoadStateFromJson(const std::string& text, AppState* out) {
                 const auto first  = Utf8ToWide(t.value("first",  std::string{}));
                 const auto second = Utf8ToWide(t.value("second", std::string{}));
                 const auto cf = CanonicalName(first), cs = CanonicalName(second);
-                if (cf.empty() || cs.empty() || cf == cs) continue;
-                mustTogether.push_back(NormalizeRestriction({first, second}));
+                if (cf.empty() && cs.empty()) continue; // blank row
+                if (!cf.empty() && cf == cs)  continue; // same student twice
+                Restriction rule{first, second};
+                if (!cf.empty() && !cs.empty()) // partials keep their column order
+                    rule = NormalizeRestriction(std::move(rule));
+                mustTogether.push_back(std::move(rule));
             }
         } else if (version >= 7 && j.contains("togethers")) {
             // legacy alt name during dev
@@ -387,6 +416,30 @@ bool LoadStateFromJson(const std::string& text, AppState* out) {
                 }
             }
         }
+
+        // --- group-only rules + "share with seating" flags (optional; older
+        //     saves lack these → groups share the seating rules by default) ---
+        auto parsePairRules = [&](const char* keyName) {
+            std::vector<Restriction> out2;
+            if (j.contains(keyName) && j[keyName].is_array()) {
+                for (const auto& r : j[keyName]) {
+                    if (!r.is_object()) continue;
+                    const auto first  = Utf8ToWide(r.value("first",  std::string{}));
+                    const auto second = Utf8ToWide(r.value("second", std::string{}));
+                    const auto cf = CanonicalName(first), cs = CanonicalName(second);
+                    if (cf.empty() && cs.empty()) continue;
+                    if (!cf.empty() && cf == cs)  continue;
+                    Restriction rule{first, second};
+                    if (!cf.empty() && !cs.empty()) rule = NormalizeRestriction(std::move(rule));
+                    out2.push_back(std::move(rule));
+                }
+            }
+            return out2;
+        };
+        std::vector<Restriction> groupRestrictions = parsePairRules("group_restrictions");
+        std::vector<Restriction> groupMustTogether = parsePairRules("group_must_together");
+        const bool groupUseSeatingApart    = j.value("group_use_seating_apart",    true);
+        const bool groupUseSeatingTogether = j.value("group_use_seating_together", true);
 
         // --- room dimensions (v3+ logical room units; 0 = auto) ---
         const int roomW = j.value("room_w", 0);
@@ -479,6 +532,10 @@ bool LoadStateFromJson(const std::string& text, AppState* out) {
             out->mustTogether       = std::move(mustTogether);
             out->autoAssignSearchLimit = autoAssignLimit;
             out->groupAffinities    = std::move(groupAffinities);
+            out->groupRestrictions  = std::move(groupRestrictions);
+            out->groupMustTogether  = std::move(groupMustTogether);
+            out->groupUseSeatingApart    = groupUseSeatingApart;
+            out->groupUseSeatingTogether = groupUseSeatingTogether;
             out->layoutItems        = std::move(layoutItems);
             out->selectedLayoutItem = (seli >= 0) ? std::optional<int>(seli) : std::nullopt;
             out->selectedLayoutItems.clear();

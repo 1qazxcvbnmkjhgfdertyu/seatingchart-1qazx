@@ -44,6 +44,58 @@ inline bool ApplyRotationTransform(HDC hdc, double deg, int cx, int cy) {
     return true;
 }
 
+COLORREF BlendColor(COLORREF from, COLORREF to, int toWeight, int totalWeight) {
+    totalWeight = std::max(1, totalWeight);
+    toWeight    = std::clamp(toWeight, 0, totalWeight);
+    const int fromWeight = totalWeight - toWeight;
+    return RGB(
+        (GetRValue(from) * fromWeight + GetRValue(to) * toWeight) / totalWeight,
+        (GetGValue(from) * fromWeight + GetGValue(to) * toWeight) / totalWeight,
+        (GetBValue(from) * fromWeight + GetBValue(to) * toWeight) / totalWeight);
+}
+
+bool ThemeIsDark(const ThemeColors& theme) {
+    return (static_cast<int>(GetRValue(theme.window)) +
+            static_cast<int>(GetGValue(theme.window)) +
+            static_cast<int>(GetBValue(theme.window))) / 3 < 128;
+}
+
+int RectWidth(const RECT& rc) {
+    return static_cast<int>(rc.right - rc.left);
+}
+
+int RectHeight(const RECT& rc) {
+    return static_cast<int>(rc.bottom - rc.top);
+}
+
+RECT SeatNameTextRect(const RECT& box) {
+    return RECT{ box.left + Scale(4), box.top + Scale(2),
+                 box.right - Scale(4), box.bottom - Scale(2) };
+}
+
+void FillRoundedRect(HDC hdc, const RECT& rc, int radius,
+                     COLORREF fill, COLORREF border) {
+    if (rc.right <= rc.left || rc.bottom <= rc.top) return;
+    const int diameter = std::max(2, radius * 2);
+    HRGN rgn = CreateRoundRectRgn(rc.left, rc.top, rc.right, rc.bottom,
+                                  diameter, diameter);
+    if (!rgn) return;
+
+    HBRUSH brush = CreateSolidBrush(fill);
+    if (brush) {
+        FillRgn(hdc, rgn, brush);
+        DeleteObject(brush);
+    }
+    HPEN pen = CreatePen(PS_SOLID, 1, border);
+    HGDIOBJ oldPen = SelectObject(hdc, pen ? pen : GetStockObject(DC_PEN));
+    HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, diameter, diameter);
+    SelectObject(hdc, oldBrush);
+    SelectObject(hdc, oldPen);
+    if (pen) DeleteObject(pen);
+    DeleteObject(rgn);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -69,10 +121,10 @@ void Renderer::ApplyThemeFromSystem() {
         theme_ = { RGB(28,28,30), RGB(38,38,42), RGB(235,235,240), RGB(175,175,182),
                    RGB(50,50,56),  RGB(68,96,150),  RGB(92,122,190),  RGB(90,90,98),
                    RGB(110,143,220), RGB(64,72,96), RGB(92,128,200), RGB(44,44,48) };
-    } else {           // light
-        theme_ = { RGB(248,250,252), RGB(255,255,255), RGB(30,30,34), RGB(95,100,110),
-                   RGB(245,247,250), RGB(214,232,252), RGB(189,214,255), RGB(110,120,135),
-                   RGB(45,105,200), RGB(230,235,245), RGB(74,116,178), RGB(244,244,246) };
+    } else {           // light, tuned for a warmer classroom-dashboard sidebar
+        theme_ = { RGB(247,242,232), RGB(255,253,247), RGB(36,48,47), RGB(111,119,114),
+                   RGB(249,246,238), RGB(214,235,224), RGB(184,221,204), RGB(190,181,166),
+                   RGB(47,125,92), RGB(232,226,213), RGB(47,125,92), RGB(255,251,242) };
     }
     RebuildResources();
 }
@@ -147,6 +199,8 @@ void Renderer::DestroyFonts() {
     df(uiFont_); df(titleFont_); df(sectionFont_);
     for (auto& [k, f] : groupFontCache_) if (f) DeleteObject(f);
     groupFontCache_.clear();
+    for (auto& [k, f] : seatNameFontCache_) if (f) DeleteObject(f);
+    seatNameFontCache_.clear();
 }
 
 void Renderer::RebuildFonts(UINT dpi) {
@@ -173,6 +227,27 @@ HFONT Renderer::GetGroupFont(float zoom) const {
     lf.lfWidth  = 0;   // let GDI choose the best width
     HFONT f = CreateFontIndirectW(&lf);
     groupFontCache_[key] = f;
+    return f;
+}
+
+HFONT Renderer::GetSeatNameFont(int pixelHeight) const {
+    const int key = std::clamp(pixelHeight, 6, Scale(96));
+    auto it = seatNameFontCache_.find(key);
+    if (it != seatNameFontCache_.end()) return it->second;
+
+    HFONT base = sectionFont_ ? sectionFont_ : uiFont_;
+    if (!base) { seatNameFontCache_[key] = nullptr; return nullptr; }
+
+    LOGFONTW lf{};
+    if (!GetObjectW(base, sizeof(lf), &lf)) { seatNameFontCache_[key] = nullptr; return nullptr; }
+
+    lf.lfHeight  = -key;
+    lf.lfWidth   = 0;
+    lf.lfWeight  = FW_SEMIBOLD;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+
+    HFONT f = CreateFontIndirectW(&lf);
+    seatNameFontCache_[key] = f;
     return f;
 }
 
@@ -673,7 +748,7 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
     {
         // ------------------------------------------------------------------
         // Unified chart — always the furniture room (rows×cols grid retired).
-        // Each furniture item owns its seats; occupants render as initials.
+        // Each furniture item owns its seats; occupants render as centred names.
         // chartMode only selects the interaction tool (Arrange vs Assign).
         // room-local → screen transform
         // ------------------------------------------------------------------
@@ -690,8 +765,10 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
             SelectObject(hdc, op); SelectObject(hdc, ob);
         }
 
-        // Optional grid overlay
-        DrawRoomGrid(hdc, tx);
+        // Keep the seating view clean; show the construction grid only while
+        // arranging the room.
+        if (state.chartMode == ChartMode::Layout)
+            DrawRoomGrid(hdc, tx);
 
         // Front-edge banner (room orientation).
         DrawFrontIndicator(hdc, tx, state.frontEdge);
@@ -704,10 +781,10 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
         if (state.layoutItems.empty()) {
             const wchar_t* hint =
                 (state.chartMode == ChartMode::Layout)
-                ? L"Use \"Add furniture\" in the sidebar to build your room layout\n"
-                  L"Then switch to Assign to place students"
-                : L"Switch to  Arrange  mode (top of sidebar)\n"
-                  L"to add desks, tables, and chairs";
+                ? L"Add desks or tables from the Room tab\n"
+                  L"Then use Students to place learners"
+                : L"Open the Room tab to add desks, tables, and chairs\n"
+                  L"Then return to Students for seating";
 
             RECT msgRect = tx.roomScreenRect;
             // Vertically center a text block in the middle third of the room.
@@ -723,6 +800,162 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
             SetTextColor(hdc, oldC);
             SetBkMode(hdc, oldBk);
         }
+
+        struct SeatNameRender {
+            std::wstring text;
+            HFONT font = nullptr;
+        };
+
+        auto seatLabelBox = [&](const std::vector<RECT>& slots, int slotIndex,
+                                POINT ctr) -> RECT {
+            int bw = Scale(64), bh = Scale(34);
+            if (slotIndex < static_cast<int>(slots.size())) {
+                const RECT ssr = RoomToScreenRect(slots[static_cast<size_t>(slotIndex)], tx);
+                bw = std::min(Scale(150), std::max(Scale(24), RectWidth(ssr) - Scale(8)));
+                bh = std::min(Scale(56),  std::max(Scale(18), RectHeight(ssr) - Scale(6)));
+            }
+            return RECT{ ctr.x - bw / 2, ctr.y - bh / 2,
+                         ctr.x + bw / 2, ctr.y + bh / 2 };
+        };
+
+        auto keepSeatLabelBoxesSeparate = [&](std::vector<RECT>& boxes,
+                                              const std::vector<POINT>& centers) {
+            const int gap = std::max(1, Scale(4));
+            const size_t n = std::min(boxes.size(), centers.size());
+            for (int pass = 0; pass < 3; ++pass) {
+                bool changed = false;
+                for (size_t a = 0; a < n; ++a) {
+                    for (size_t b = a + 1; b < n; ++b) {
+                        RECT overlap{};
+                        if (!IntersectRect(&overlap, &boxes[a], &boxes[b]))
+                            continue;
+                        const int ow = RectWidth(overlap);
+                        const int oh = RectHeight(overlap);
+                        if (ow <= 0 || oh <= 0)
+                            continue;
+
+                        if (ow <= oh) {
+                            const int mid = (centers[a].x + centers[b].x) / 2;
+                            if (centers[a].x <= centers[b].x) {
+                                boxes[a].right = std::min<LONG>(boxes[a].right, mid - gap);
+                                boxes[b].left  = std::max<LONG>(boxes[b].left,  mid + gap);
+                            } else {
+                                boxes[b].right = std::min<LONG>(boxes[b].right, mid - gap);
+                                boxes[a].left  = std::max<LONG>(boxes[a].left,  mid + gap);
+                            }
+                        } else {
+                            const int mid = (centers[a].y + centers[b].y) / 2;
+                            if (centers[a].y <= centers[b].y) {
+                                boxes[a].bottom = std::min<LONG>(boxes[a].bottom, mid - gap);
+                                boxes[b].top    = std::max<LONG>(boxes[b].top,    mid + gap);
+                            } else {
+                                boxes[b].bottom = std::min<LONG>(boxes[b].bottom, mid - gap);
+                                boxes[a].top    = std::max<LONG>(boxes[a].top,    mid + gap);
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+                if (!changed)
+                    break;
+            }
+
+            for (size_t i = 0; i < n; ++i) {
+                if (boxes[i].right <= boxes[i].left) {
+                    boxes[i].left  = centers[i].x - Scale(8);
+                    boxes[i].right = centers[i].x + Scale(8);
+                }
+                if (boxes[i].bottom <= boxes[i].top) {
+                    boxes[i].top    = centers[i].y - Scale(7);
+                    boxes[i].bottom = centers[i].y + Scale(7);
+                }
+            }
+        };
+
+        auto textFitsSeatBox = [&](HFONT candidate, const std::wstring& text,
+                                   const RECT& rc) -> bool {
+            if (text.empty() || rc.right <= rc.left || rc.bottom <= rc.top)
+                return false;
+            HGDIOBJ oldFont = SelectObject(hdc, candidate ? candidate : font);
+            TEXTMETRICW tm{};
+            GetTextMetricsW(hdc, &tm);
+            SIZE textSize{};
+            const bool measured = GetTextExtentPoint32W(
+                hdc, text.c_str(), static_cast<int>(text.size()), &textSize) != FALSE;
+            SelectObject(hdc, oldFont);
+            return measured &&
+                   tm.tmHeight <= RectHeight(rc) &&
+                   textSize.cx <= RectWidth(rc);
+        };
+
+        auto chooseSeatNameRender = [&](const std::wstring& occupant,
+                                        const RECT& textRect) -> SeatNameRender {
+            std::vector<std::wstring> candidates;
+            auto pushCandidate = [&](std::wstring value) {
+                value = TrimCopy(value);
+                if (value.empty()) return;
+                if (std::find(candidates.begin(), candidates.end(), value) == candidates.end())
+                    candidates.push_back(std::move(value));
+            };
+            pushCandidate(DisplayStudentName(occupant, state.showLastNames));
+            pushCandidate(SplitDisplayName(occupant).first);
+            pushCandidate(SeatInitials(occupant));
+
+            const int maxPx = std::max(Scale(7), std::min(Scale(28), RectHeight(textRect)));
+            const int minPx = std::min(maxPx, Scale(7));
+            for (const auto& candidateText : candidates) {
+                int lo = minPx;
+                int hi = maxPx;
+                int best = 0;
+                while (lo <= hi) {
+                    const int mid = lo + (hi - lo) / 2;
+                    HFONT candidateFont = GetSeatNameFont(mid);
+                    if (textFitsSeatBox(candidateFont, candidateText, textRect)) {
+                        best = mid;
+                        lo = mid + 1;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+                if (best > 0)
+                    return { candidateText, GetSeatNameFont(best) };
+            }
+
+            return {
+                candidates.empty() ? std::wstring{} : candidates.back(),
+                GetSeatNameFont(minPx)
+            };
+        };
+
+        auto drawSeatName = [&](const std::wstring& occupant, const RECT& box,
+                                COLORREF color) {
+            RECT draw = SeatNameTextRect(box);
+            if (draw.right <= draw.left || draw.bottom <= draw.top)
+                return;
+
+            const SeatNameRender label = chooseSeatNameRender(occupant, draw);
+            HRGN clip = CreateRectRgn(draw.left, draw.top, draw.right, draw.bottom);
+            const int saved = SaveDC(hdc);
+            SelectObject(hdc, label.font ? label.font : font);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, color);
+            SelectClipRgn(hdc, clip);
+            DrawTextW(hdc, label.text.c_str(), -1, &draw,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE |
+                      DT_END_ELLIPSIS | DT_NOPREFIX);
+            RestoreDC(hdc, saved);
+            DeleteObject(clip);
+        };
+
+        auto fillSeatLabelBoxes = [&](const std::vector<RECT>& slots,
+                                      const std::vector<POINT>& centers) {
+            std::vector<RECT> boxes;
+            boxes.reserve(centers.size());
+            for (int s = 0; s < static_cast<int>(centers.size()); ++s)
+                boxes.push_back(seatLabelBox(slots, s, centers[static_cast<size_t>(s)]));
+            keepSeatLabelBoxesSeparate(boxes, centers);
+            return boxes;
+        };
 
         // Furniture items (back-to-front)
         for (size_t i = 0; i < state.layoutItems.size(); ++i) {
@@ -748,7 +981,7 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
                 RestoreDC(hdc, saved);
             }
 
-            // Seat occupants (rotation-aware centres, unrotated initials).
+            // Seat occupants (rotation-aware centres, unrotated readable labels).
             const auto slots = LayoutSeatSlots(item);
             std::vector<POINT> seatCenters;
             seatCenters.reserve(slots.size());
@@ -802,12 +1035,12 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
 
             // Seat occupants — only in Assign mode (not visible in Arrange mode).
             if (state.chartMode != ChartMode::Layout) {
-                ScopedSelect nameFont(hdc, static_cast<HGDIOBJ>(uiFont_ ? uiFont_ : font));
+                const std::vector<RECT> seatBoxes = fillSeatLabelBoxes(slots, seatCenters);
                 for (int s = 0; s < seatCount &&
-                                 s < static_cast<int>(seatCenters.size()); ++s) {
+                                 s < static_cast<int>(seatCenters.size()) &&
+                                 s < static_cast<int>(seatBoxes.size()); ++s) {
                     const POINT ctr = seatCenters[static_cast<size_t>(s)];
                     const std::wstring& occ = item.occupants[static_cast<size_t>(s)];
-                    const std::wstring disp = DisplayStudentName(occ, state.showLastNames);
                     const bool focused = state.selectedLayoutSeat &&
                         state.selectedLayoutSeat->first  == static_cast<int>(i) &&
                         state.selectedLayoutSeat->second == s;
@@ -816,13 +1049,7 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
                         continue;
 
                     // Label box sized to the seat slot (with sensible fallback).
-                    int bw = Scale(64), bh = Scale(34);
-                    if (s < static_cast<int>(slots.size())) {
-                        const RECT ssr = RoomToScreenRect(slots[static_cast<size_t>(s)], tx);
-                        bw = std::clamp(static_cast<int>(ssr.right  - ssr.left) - Scale(4), Scale(46), Scale(160));
-                        bh = std::clamp(static_cast<int>(ssr.bottom - ssr.top)  - Scale(4), Scale(22), Scale(70));
-                    }
-                    const RECT box{ ctr.x - bw/2, ctr.y - bh/2, ctr.x + bw/2, ctr.y + bh/2 };
+                    const RECT box = seatBoxes[static_cast<size_t>(s)];
 
                     if (occ.empty()) {
                         const int rr = std::max(3, Scale(3));
@@ -842,7 +1069,7 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
                     // otherwise the default occupied colour. Border highlights focus.
                     const uint32_t scol = state.StudentColor(occ);
                     HBRUSH colBrush = nullptr;
-                    if (scol != 0) colBrush = CachedColorBrush(static_cast<COLORREF>(scol & 0x00FFFFFF));
+                    if (scol != 0) colBrush = CachedColorBrush(ColorrefFromWebRgb(scol));
                     HGDIOBJ ob = SelectObject(hdc, colBrush ? colBrush : res_.seatOccupiedBrush);
                     HGDIOBJ op = SelectObject(hdc, focused ? res_.selectedPen : res_.borderPen);
                     RoundRect(hdc, box.left, box.top, box.right, box.bottom, Scale(6), Scale(6));
@@ -856,19 +1083,7 @@ void Renderer::PaintChart(HDC hdc, const AppState& state,
                         txt = (lum < 140) ? RGB(255,255,255) : RGB(20,20,20);
                     }
 
-                    // Full name: wrap within the box, then vertically centre it.
-                    RECT tr{ box.left + Scale(3), box.top + Scale(2),
-                             box.right - Scale(3), box.bottom - Scale(2) };
-                    RECT calc = tr;
-                    DrawTextW(hdc, disp.c_str(), -1, &calc,
-                              DT_CENTER | DT_WORDBREAK | DT_CALCRECT | DT_EDITCONTROL);
-                    const int avail = tr.bottom - tr.top;
-                    const int th = std::min<int>(calc.bottom - calc.top, avail);
-                    RECT draw{ tr.left, tr.top + (avail - th) / 2, tr.right, tr.top + (avail - th) / 2 + th };
-                    SetBkMode(hdc, TRANSPARENT);
-                    SetTextColor(hdc, txt);
-                    DrawTextW(hdc, disp.c_str(), -1, &draw,
-                              DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
+                    drawSeatName(occ, box, txt);
                 }
             }
 
@@ -1002,6 +1217,54 @@ void Renderer::PaintWindowBuffered(HWND hwnd, HDC hdc, const AppState& state,
     BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
     backBufferInUse_ = false;
 }
+
+// ---------------------------------------------------------------------------
+// Group-card palette (file-local)
+// ---------------------------------------------------------------------------
+namespace {
+
+// A round-robin palette of distinct, classroom-friendly colours so each
+// generated group reads as its own colour at a glance (and when projected).
+// Medium saturation: vivid enough to tell apart, soft enough to stay pleasant.
+inline COLORREF GroupCardColor(int index) {
+    static const COLORREF kPalette[] = {
+        RGB( 59, 130, 246),  // blue
+        RGB( 34, 160,  94),  // green
+        RGB(234, 140,  42),  // orange
+        RGB(139,  92, 246),  // purple
+        RGB( 20, 170, 170),  // teal
+        RGB(232,  90, 140),  // rose
+        RGB(224,  72,  72),  // red
+        RGB( 40, 160, 210),  // sky
+        RGB(120, 170,  40),  // lime
+        RGB(180,  80, 190),  // magenta
+        RGB(202, 150,  30),  // gold
+        RGB( 79,  90, 200),  // indigo
+    };
+    const int n = static_cast<int>(std::size(kPalette));
+    return kPalette[((index % n) + n) % n];
+}
+
+// Linear blend of two colours; t=0 → a, t=1 → b.
+inline COLORREF BlendColor(COLORREF a, COLORREF b, double t) {
+    t = std::clamp(t, 0.0, 1.0);
+    auto mix = [&](int ca, int cb) {
+        return static_cast<int>(ca + (cb - ca) * t + 0.5);
+    };
+    return RGB(mix(GetRValue(a), GetRValue(b)),
+               mix(GetGValue(a), GetGValue(b)),
+               mix(GetBValue(a), GetBValue(b)));
+}
+
+// White or near-black text, whichever contrasts better with bg (Rec. 601 luma).
+inline COLORREF ContrastText(COLORREF bg) {
+    const double luma = 0.299 * GetRValue(bg) +
+                        0.587 * GetGValue(bg) +
+                        0.114 * GetBValue(bg);
+    return luma < 150.0 ? RGB(255, 255, 255) : RGB(25, 25, 25);
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // PaintGroupsCanvasBuffered / PaintGroupsCanvas
@@ -1201,7 +1464,7 @@ void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
         InflateRect(&msgRect, -kMargin, 0);
         SetTextColor(hdc, RGB(150, 150, 150));
         DrawTextW(hdc,
-            L"Click \"Shuffle Groups\" in the panel to generate groups.",
+            L"Click \"Make Groups\" in the panel to generate groups.",
             -1, &msgRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_WORD_ELLIPSIS);
         if (prevFont) SelectObject(hdc, prevFont);
         return;
@@ -1265,10 +1528,16 @@ void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
         const int cardTop   = badgeTop + kBadgeH / 2;
         const int cardBot   = cardTop  + cardBodyH;
 
-        // White rounded card
+        // Per-group colour: a soft tinted card with a matching coloured border,
+        // so each group is distinguishable at a glance and when projected.
+        const COLORREF cardColor = GroupCardColor(i);
+        const COLORREF cardTint  = BlendColor(cardColor, RGB(255, 255, 255), 0.86);
+        const int      borderW   = std::max(1, sc(2));
+
+        // Rounded card: soft tint fill, colour border
         {
-            HBRUSH b = CreateSolidBrush(RGB(255, 255, 255));
-            HPEN   p = CreatePen(PS_SOLID, 1, RGB(210, 210, 210));
+            HBRUSH b = CreateSolidBrush(cardTint);
+            HPEN   p = CreatePen(PS_SOLID, borderW, cardColor);
             auto ob  = SelectObject(hdc, b);
             auto op  = SelectObject(hdc, p);
             RoundRect(hdc, cardLeft, cardTop, cardRight, cardBot, kCornerR, kCornerR);
@@ -1290,7 +1559,7 @@ void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
         const int badgeBot = badgeTop + kBadgeH;
 
         {
-            HBRUSH b = CreateSolidBrush(RGB(20, 20, 20));
+            HBRUSH b = CreateSolidBrush(cardColor);
             HPEN   p = static_cast<HPEN>(GetStockObject(NULL_PEN));
             auto ob  = SelectObject(hdc, b);
             auto op  = SelectObject(hdc, p);
@@ -1300,7 +1569,7 @@ void Renderer::PaintGroupsCanvas(HDC hdc, const RECT& bounds,
         }
         {
             RECT br = {badgeL, badgeTop, badgeR, badgeBot};
-            SetTextColor(hdc, RGB(255, 255, 255));
+            SetTextColor(hdc, ContrastText(cardColor));
             DrawTextW(hdc, badgeTxt.c_str(), -1, &br,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
@@ -1336,35 +1605,74 @@ void Renderer::PaintInfoPanel(HDC hdc, HWND sidebar, const AppLayout& layout,
                                int scrollOffset,
                                const std::vector<int>& sectionDividers,
                                int headerH, int statusH) const {
+    (void)layout;
     RECT client{}; GetClientRect(sidebar, &client);
-    HBRUSH pb = res_.panelBrush ? res_.panelBrush : CreateSolidBrush(theme_.panel);
-    FillRect(hdc, &client, pb);
-    if (!res_.panelBrush) DeleteObject(pb);
+    const bool dark = ThemeIsDark(theme_);
+    const COLORREF sidebarBack = dark ? theme_.panel : RGB(247, 242, 232);
+    const COLORREF cardFill    = dark ? BlendColor(theme_.panel, RGB(255, 255, 255), 1, 16)
+                                      : RGB(255, 253, 247);
+    const COLORREF cardBorder  = dark ? BlendColor(theme_.border, theme_.panel, 5, 10)
+                                      : RGB(221, 212, 197);
+    const COLORREF divider     = dark ? BlendColor(theme_.border, theme_.panel, 4, 10)
+                                      : RGB(217, 207, 191);
 
-    HPEN bp = res_.borderPen ? res_.borderPen : CreatePen(PS_SOLID, 1, theme_.border);
+    HBRUSH pb = CreateSolidBrush(sidebarBack);
+    FillRect(hdc, &client, pb);
+    DeleteObject(pb);
+
+    HPEN bp = CreatePen(PS_SOLID, 1, divider);
     HGDIOBJ op = SelectObject(hdc, bp);
 
     MoveToEx(hdc, client.left, client.top, nullptr);
     LineTo(hdc, client.left, client.bottom);
 
-    const int px          = layout.info.left;
+    const int px          = Margin();
     const int pw          = std::max(1, static_cast<int>(client.right - Margin() * 2));
     const int headerBottom = headerH;
     const int statusTop    = std::max(headerBottom,
                                       static_cast<int>(client.bottom) - statusH);
 
-    MoveToEx(hdc, px, headerBottom, nullptr); LineTo(hdc, px + pw, headerBottom);
-    MoveToEx(hdc, px, statusTop,    nullptr); LineTo(hdc, px + pw, statusTop);
+    const int radius = Scale(12);
+    const int inset  = Scale(6);
 
+    RECT headerCard{px - inset, Scale(8), px + pw + inset,
+                    std::max(Scale(40), headerBottom - Scale(8))};
+    FillRoundedRect(hdc, headerCard, radius, cardFill, cardBorder);
+
+    RECT tabCard{px - inset, headerBottom + Scale(4), px + pw + inset,
+                 std::min(statusTop - Scale(4), headerBottom + Scale(4) + Scale(34))};
+    if (tabCard.bottom > tabCard.top)
+        FillRoundedRect(hdc, tabCard, Scale(10),
+                        dark ? BlendColor(theme_.panel, theme_.accent, 1, 16)
+                             : RGB(239, 233, 221),
+                        cardBorder);
+
+    std::vector<int> starts;
+    starts.reserve(sectionDividers.size());
     for (int absY : sectionDividers) {
         const int lineY = absY - scrollOffset;
         if (lineY <= headerBottom || lineY >= statusTop) continue;
-        MoveToEx(hdc, px, lineY, nullptr);
-        LineTo(hdc, px + pw, lineY);
+        starts.push_back(lineY);
+    }
+    std::sort(starts.begin(), starts.end());
+    starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+
+    for (size_t i = 0; i < starts.size(); ++i) {
+        const int top = std::max(headerBottom + Scale(8), starts[i] - Scale(8));
+        const int next = (i + 1 < starts.size()) ? starts[i + 1] : statusTop;
+        const int bottom = std::min(statusTop - Scale(8), next - Scale(10));
+        if (bottom - top < Scale(24)) continue;
+        RECT card{px - inset, top, px + pw + inset, bottom};
+        FillRoundedRect(hdc, card, radius, cardFill, cardBorder);
+    }
+
+    MoveToEx(hdc, px, headerBottom, nullptr); LineTo(hdc, px + pw, headerBottom);
+    if (statusH > 0) {
+        MoveToEx(hdc, px, statusTop, nullptr); LineTo(hdc, px + pw, statusTop);
     }
 
     SelectObject(hdc, op);
-    if (!res_.borderPen) DeleteObject(bp);
+    DeleteObject(bp);
 }
 
 // ---------------------------------------------------------------------------
