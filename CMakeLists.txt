@@ -58,7 +58,7 @@ add_executable(seating_chart_app WIN32
 target_compile_definitions(seating_chart_app PRIVATE ${COMMON_DEFS})
 target_include_directories(seating_chart_app PRIVATE src)
 target_link_libraries(seating_chart_app PRIVATE
-    user32 gdi32 comctl32 comdlg32 advapi32 winspool
+    user32 gdi32 comctl32 comdlg32 advapi32 winspool dbghelp uxtheme
     nlohmann_json
 )
 

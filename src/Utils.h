@@ -214,6 +214,13 @@ struct WindowUiMetrics {
     return items;
 }
 
+// StudentInfo.color is stored as 0x00RRGGBB (web byte order); COLORREF is
+// 0x00BBGGRR.  Casting the raw value swaps red and blue ("yellow turns cyan"),
+// so every GDI consumer must convert through this helper instead.
+[[nodiscard]] inline COLORREF ColorrefFromWebRgb(uint32_t rgb) {
+    return RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+}
+
 [[nodiscard]] inline Restriction NormalizeRestriction(Restriction r) {
     r.first  = TrimCopy(r.first);
     r.second = TrimCopy(r.second);

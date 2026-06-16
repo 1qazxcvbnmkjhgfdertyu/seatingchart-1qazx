@@ -118,8 +118,21 @@ constexpr int kInlineFirstEditId      = 6035;
 constexpr int kInlineLastEditId       = 6036;
 constexpr int kSaveStudentEditId      = 6037;
 
-// Inline rule cell edit (Rules tab — floating CBS_DROPDOWN over keepApart/Together lists)
-constexpr int kRuleCellComboId        = 6038;
+// Inline rule cell edit (Rules tab — floating EDIT + popup suggestion LISTBOX)
+constexpr int kRuleCellComboId        = 6038; // retired; kept to avoid ID reuse
+constexpr int kRuleCellEditId         = 6039; // the floating WS_CHILD EDIT control
+constexpr int kRuleSuggestionListId   = 6040; // the WS_POPUP suggestion LISTBOX
+
+// Groups tab — "Groups of:" stepper (replaces the retired 6028 dropdown, which
+// could not be themed readably in the dark sidebar)
+constexpr int kGroupSizeMinusId       = 6041;
+constexpr int kGroupSizePlusId        = 6042;
+
+// Groups tab — per-section "Same as seating rules" toggles.  Checked = the group
+// generator reuses the seating keep-apart/keep-together rules; unchecked = use a
+// separate group-only list.
+constexpr int kGroupApartSameId       = 6043;
+constexpr int kGroupTogetherSameId    = 6044;
 
 // Class strip (main window, not sidebar)
 constexpr int kClassStripId           = 6100;
@@ -216,7 +229,10 @@ struct ControlHandles {
     // Groups tab (index 3)
     HWND groupSizeLabel   = nullptr;
     HWND groupSizeEdit    = nullptr, groupSizeSpin    = nullptr; // legacy, kept hidden
-    HWND groupSizeCombo   = nullptr;   // new "Groups of:" dropdown
+    HWND groupSizeCombo   = nullptr;   // retired dropdown (kept hidden — unthemeable)
+    HWND groupSizeMinus   = nullptr;   // "−" stepper button
+    HWND groupSizeValue   = nullptr;   // current group-size value label
+    HWND groupSizePlus    = nullptr;   // "+" stepper button
     HWND groupOrLabel     = nullptr;   // "or" static text
     HWND groupOrValLabel  = nullptr;   // e.g. "3" (computed overflow size)
     HWND groupSummaryLabel = nullptr;
@@ -229,6 +245,8 @@ struct ControlHandles {
     HWND groupResetBtn    = nullptr;
     HWND groupKeepApartToggle = nullptr;
     HWND groupKeepTogetherToggle = nullptr;
+    HWND groupApartSameChk = nullptr;     // "Same as seating rules" (keep-apart)
+    HWND groupTogetherSameChk = nullptr;  // "Same as seating rules" (keep-together)
     HWND groupAvoidSameNumberCheck = nullptr;
     HWND groupAvoidSamePartnersCheck = nullptr;
     HWND groupAvoidSameFullGroupCheck = nullptr;
@@ -243,6 +261,12 @@ struct ControlHandles {
     HWND frontEdgeLabel = nullptr, frontEdgeButton = nullptr;
 };
 
+enum class FooterProgressTheme {
+    Native = 0,
+    Vista = 1,
+    Crayon = 2,
+};
+
 // ---------------------------------------------------------------------------
 // Forward-declared Renderer (full definition not needed here)
 // ---------------------------------------------------------------------------
@@ -250,6 +274,10 @@ class Renderer;
 
 void CreateAllUIControls(HWND parent, ControlHandles& c);
 void ApplyFontsToControls(const ControlHandles& c, const Renderer& r);
+void SetFooterProgressRange(HWND progress, int minValue, int maxValue);
+void SetFooterProgressPos(HWND progress, int pos);
+void SetFooterProgressTheme(HWND progress, FooterProgressTheme theme,
+                            const ThemeColors& appTheme);
 
 // Sync helpers (called by SeatingChartApp after state changes)
 void SyncRosterEditFromRoster(const AppState& state, const ControlHandles& c);
@@ -258,7 +286,9 @@ void SyncGroupRulesEditFromState(const AppState& state, const ControlHandles& c)
 void RefreshRosterList(const AppState& state, const ControlHandles& c);
 void SyncLayoutInspectorWithSelection(const AppState& state, const ControlHandles& c);
 void SyncRosterView(const AppState& state, const ControlHandles& c);
-void SyncRulesLists(const AppState& state, const ControlHandles& c);
+void SyncRulesLists(const AppState& state, const ControlHandles& c,
+                    const std::vector<Restriction>& apartRules,
+                    const std::vector<Restriction>& togetherRules);
 void UpdateSidebarText(const AppState& state, const ControlHandles& c);
 void UpdateButtonState(const AppState& state, const ControlHandles& c,
                        bool autoAssignRunning);

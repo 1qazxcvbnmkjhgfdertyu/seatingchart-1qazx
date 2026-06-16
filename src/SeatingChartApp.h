@@ -42,9 +42,23 @@ public:
     void CancelInlineCellEdit();
     void AdvanceToNextStudent();   // Enter key: commit + open next row's first-name cell
     bool IsAddingNewStudent() const { return cellEdit_.isNew; }
-    // Called from subclass proc (must be public)
-    void CommitRuleCellEdit();
+    // Called from subclass procs (must be public)
+    enum class RuleAdvance { None, NextCell, NextRow };
+    void CommitRuleCellEdit(RuleAdvance advance = RuleAdvance::None);
     void CancelRuleCellEdit();
+    // Commit both floating inline editors (rule cell + roster cell) if open.
+    // Called before anything that moves sidebar children (resize, scroll,
+    // splitter drag, tab switch) — the editors float at fixed coordinates and
+    // would otherwise be orphaned at stale positions.
+    void CommitOpenInlineEditors() {
+        if (ruleCellEdit_.edit) CommitRuleCellEdit(RuleAdvance::None);
+        if (cellEdit_.wnd)      CommitInlineCellEdit(false);
+    }
+    void ShowRuleCellContextMenu(bool isApart, int row, int col);
+    void UpdateRuleSuggestions();               // rebuild + show/hide popup list
+    void AcceptRuleSuggestion(int idx);         // copy match[idx] into the edit
+    void MoveRuleSuggestionHighlight(int delta);// scroll list selection up/down
+    HWND RuleSuggestionList() const { return ruleCellEdit_.suggestion; }
 
     static SeatingChartApp* FromHwnd(HWND hwnd) {
         return reinterpret_cast<SeatingChartApp*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -98,6 +112,7 @@ private:
     int  sidebarWidth_ = 0;
     bool resizingSidebar_      = false;
     bool sidebarRecalculating_ = false; // re-entrance guard for HandleSidebarMessage(WM_SIZE)
+    bool inSizeMove_           = false; // true while user is dragging a resize/move handle
 
     // --- Auto-assign ---
     bool              aaRunning_       = false;
@@ -138,7 +153,7 @@ private:
     int  activeClassIdx_ = 0;
     HWND classListBox_   = nullptr;
     HWND addClassBtn_    = nullptr;
-    static constexpr int kClassStripW = 44; // logical units
+    static constexpr int kClassStripW = 58; // logical units
 
     // --- Groups (transient, not saved) ---
     std::vector<std::vector<std::wstring>> generatedGroups_;
@@ -150,6 +165,42 @@ private:
     std::unordered_set<std::wstring> groupExactHistory_;
     std::wstring groupPermutationCacheKey_;
     std::wstring groupPermutationCacheValue_ = L"0";
+    int footerProgressCurrentPct_ = 0;
+    int footerProgressTargetPct_ = 0;
+    struct GroupRuleAudit {
+        bool avoidSameNumber = false;
+        bool avoidSamePartners = false;
+        bool avoidSameFullGroup = false;
+        bool numberedSlotExhausted = false;
+        bool roundsKnown = false;
+        int groupSlotCount = 0;
+        int exhaustedUsedSlots = 0;
+        int totalRoundCapacity = 0;
+        int usedRounds = 0;
+        int remainingRounds = 0;
+        int progressPercent = 0;
+        std::wstring exhaustedStudent;
+        std::wstring blockingReason;
+        // Human-readable description of WHAT sets the rounds cap when it is
+        // tighter than the plain numbered-slot bound — e.g. a keep-together
+        // pair that can only ever sit as its own (bannable) pair composition
+        // or inside the single larger slot.  Shown in the footer/summary so
+        // the predicted rounds match what shuffling will actually allow.
+        std::wstring capSource;
+    };
+
+    // Diagnostics filled by the exact-cover group solver (used for the
+    // "Unable to Shuffle Groups" explanation; ignored by the round simulator).
+    struct GroupSolveDiagnostics {
+        bool attempted = false;
+        bool skipped = false;
+        bool impossible = false;
+        bool budgetHit = false;
+        uint64_t candidateNodes = 0;
+        uint64_t searchNodes = 0;
+        size_t candidateCount = 0;
+        std::wstring detail;
+    };
 
     // --- Inline cell editing (floating overlay EDIT on rosterView) ---
     struct CellEdit {
@@ -161,13 +212,17 @@ private:
     };
     CellEdit cellEdit_;
     void BeginInlineCellEdit(int item, int subItem);   // create floating edit
+    void BeginAddStudentRow();   // append temp row + open first-name editor
 
-    // --- Inline rule cell editing (floating CBS_DROPDOWN over keepApart/Together lists) ---
+    // --- Inline rule cell editing (floating EDIT + popup suggestion LISTBOX) ---
     struct RuleCellEdit {
-        HWND combo   = nullptr; // the floating CBS_DROPDOWN combobox (child of sidebar)
-        int  row     = -1;      // index into restrictions or affinities
-        int  col     = -1;      // 0 = first name, 1 = second name
-        bool isApart = true;    // true = restrictions, false = affinities
+        HWND edit           = nullptr; // floating WS_CHILD EDIT (child of sidebar)
+        HWND suggestion     = nullptr; // WS_POPUP LISTBOX with roster matches
+        int  row            = -1;      // index into restrictions or mustTogether
+        int  col            = -1;      // 0 = Student A, 1 = Student B
+        bool isApart        = true;    // true = restrictions, false = mustTogether
+        bool suppressChange = false;   // blocks EN_CHANGE re-entrance while we update
+        std::vector<std::wstring> matches; // current suggestion list contents
     };
     RuleCellEdit ruleCellEdit_;
     void BeginRuleCellEdit(int row, int col, bool isApart);
@@ -189,7 +244,7 @@ private:
     LRESULT OnMouseMove(POINT pt, WPARAM buttons);
     LRESULT OnMouseLeave();
     LRESULT OnContextMenu(HWND source, POINT screenPt);   // right-click layout context menu
-    LRESULT OnSetCursor(LPARAM lParam);
+    LRESULT OnSetCursor(WPARAM wParam, LPARAM lParam);
     LRESULT OnPaint();
     LRESULT OnDestroy();
     LRESULT OnAutoAssignDone(AutoAssignResult* result);
@@ -202,6 +257,8 @@ private:
     void ClearAllSeats();
     void BuildMenuBar();
     void RefreshAutoAssignFooter();
+    void SetFooterProgressTarget(int pct, bool animate);
+    void StepFooterProgressAnimation();
     void ShowAlignmentToolsWindow();
     void ShowObjectInspectorWindow();
     void LayoutFloatingTools();
@@ -243,7 +300,32 @@ private:
     [[nodiscard]] bool GroupAvoidSameFullGroupEnabled() const;
     [[nodiscard]] std::vector<int> CurrentGroupPattern() const;
     [[nodiscard]] std::wstring CanonicalGroupKey(const std::vector<std::wstring>& group) const;
-    [[nodiscard]] std::wstring BuildGroupsSummaryText(const std::wstring& exactText) const;
+    [[nodiscard]] std::wstring BuildGroupsSummaryText();
+    [[nodiscard]] GroupRuleAudit BuildGroupRuleAudit(const std::vector<int>& pattern) const;
+    // One valid grouping for `pattern` under the active rules + current history,
+    // or empty if none / solver inapplicable. The SAME exact-cover engine
+    // ShuffleGroups uses, so the round simulator can never disagree with it.
+    [[nodiscard]] std::vector<std::vector<std::wstring>> SolveGroupingExactCover(
+        const std::vector<int>& pattern, GroupSolveDiagnostics* diag = nullptr) const;
+    // How many MORE shuffles can actually succeed from the current history,
+    // found by simulating real shuffles with SolveGroupingExactCover. Mirrors
+    // pressing the button, so the displayed countdown matches reality. Returns
+    // -1 when the solver does not apply (roster > 60 / >63 keep-together groups).
+    [[nodiscard]] int ComputeRemainingGroupRounds(const std::vector<int>& pattern);
+    // Fresh (never-grouped) student pairings remaining + total possible (C(N,2)).
+    // Size-aware automatically: groupPairHistory_ records EVERY within-group pair,
+    // so a group of k consumes C(k,2) pairings — not just one.
+    [[nodiscard]] long long FreshPairings(long long& outTotal) const;
+    // --- Rule scoping (seating vs group) ---
+    // The keep-apart/keep-together rule set the ACTIVE rule UI reads & writes:
+    // group-only list on the Groups tab when its "Same as seating" box is
+    // unchecked, otherwise the shared seating rule list.
+    [[nodiscard]] std::vector<Restriction>& ActiveRuleVec(bool isApart);
+    // The rules the GROUP GENERATOR uses (independent of which tab is showing).
+    [[nodiscard]] const std::vector<Restriction>& GroupApartRules() const;
+    [[nodiscard]] const std::vector<Restriction>& GroupTogetherRules() const;
+    // Repopulate the rule ListViews from whatever the active tab should show.
+    void SyncActiveRulesLists();
     [[nodiscard]] std::wstring BuildGroupPermutationCacheKey() const;
     [[nodiscard]] std::wstring ExactGroupPermutationText();
     [[nodiscard]] bool CandidateGroupsMeetConstraints(const std::vector<std::vector<std::wstring>>& groups) const;
@@ -275,8 +357,9 @@ private:
     bool PromptAndLoadRosterFile();
     void AssignRosterSelectionToSeat();
     void DeleteSelectedRosterStudents(); // right-click "Delete" on roster
-    void BulkTagSelectedRoster(); // bulk apply tag to selected in roster list
+    void BulkTagSelectedRoster(); // bulk apply tag to selected roster-table rows
     bool BeginRosterDragFromList(POINT listClientPt);
+    bool BeginRosterDragFromView(POINT listClientPt);
     void UpdateRosterDrag(POINT screenPt);
     void EndRosterDrag(POINT screenPt, bool commit);
 
@@ -286,8 +369,10 @@ private:
     void SetLayoutSelectionHint();   // status hint reflecting current selection
     // Assign / clear the occupant of a furniture seat via a roster popup menu.
     void AssignLayoutSeatViaMenu(LayoutSeatRef seat, POINT screenAnchor);
-    // Right-click menu for a seated student: colour/group + attribute tags.
+    // Right-click menu for a seated student: colour/group + attribute tags + notes.
     void StudentContextMenu(LayoutSeatRef seat, POINT screenAnchor);
+    // Modal dialog for editing per-student free-text notes.
+    void ShowStudentNotesDialog(const std::wstring& name);
 
     // --- Mode ---
     void SetChartMode(ChartMode mode);

@@ -69,10 +69,17 @@ public:
     std::vector<std::wstring> roster;
     // Per-student attributes/notes/colour, keyed by CanonicalName(name).
     std::unordered_map<std::wstring, StudentInfo> studentInfo;
-    std::vector<Restriction>  restrictions;          // hard keep-apart rules
+    std::vector<Restriction>  restrictions;          // hard keep-apart rules (seating)
     std::vector<Restriction>  affinities;            // soft "sit near" preferences
     std::vector<Restriction>  mustTogether;          // hard "must sit together" (same item or close seats)
     std::vector<std::vector<std::wstring>> groupAffinities; // groups of students that should sit clustered (e.g. same table/pod)
+    // Group generator rules.  By default the Groups tab reuses the seating
+    // keep-apart / keep-together rules above; unchecking "Same as seating" in a
+    // section switches it to its own independent list below.
+    std::vector<Restriction>  groupRestrictions;     // group-only keep-apart (used when !groupUseSeatingApart)
+    std::vector<Restriction>  groupMustTogether;     // group-only keep-together (used when !groupUseSeatingTogether)
+    bool groupUseSeatingApart    = true;             // groups share the seating keep-apart rules
+    bool groupUseSeatingTogether = true;             // groups share the seating keep-together rules
     std::vector<LayoutItem>   layoutItems;
     size_t                    autoAssignSearchLimit = kDefaultAutoAssignSearchLimit; // configurable steps for solver
     double                    lastAffinitySatisfaction = 0.0; // for post-solve badge / summary

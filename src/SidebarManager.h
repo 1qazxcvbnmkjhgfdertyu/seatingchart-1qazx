@@ -43,6 +43,9 @@ public:
     int  ActiveTab()    const { return activeTab_; }
     void SetGroupKeepApartCollapsed(bool collapsed) { groupKeepApartCollapsed_ = collapsed; }
     void SetGroupKeepTogetherCollapsed(bool collapsed) { groupKeepTogetherCollapsed_ = collapsed; }
+    // The bottom footer is hidden on every tab but Groups — except while an
+    // auto-assign is running, where its progress bar/countdown stays visible.
+    void SetAutoAssignActive(bool active) { showFooterForAA_ = active; }
     bool GroupKeepApartCollapsed() const { return groupKeepApartCollapsed_; }
     bool GroupKeepTogetherCollapsed() const { return groupKeepTogetherCollapsed_; }
 
@@ -67,6 +70,11 @@ private:
     int scrollLine_ = 36;
     bool groupKeepApartCollapsed_ = true;
     bool groupKeepTogetherCollapsed_ = true;
+    bool showFooterForAA_ = false; // keep footer visible during an auto-assign run
+    // Accumulates raw wheel/precision-touchpad delta so sub-notch increments
+    // (touchpads send deltas far smaller than WHEEL_DELTA) aren't lost to integer
+    // truncation — that truncation was why two-finger trackpad scroll did nothing.
+    int  wheelAccum_ = 0;
     std::vector<int> sectionDividers_;
 
     // Sub-functions called by Recalculate
@@ -77,10 +85,11 @@ private:
                              int px, int pw, int base, int scrollUsed,
                              const AppState& state);
     int  LayoutArrangePanel(HDWP& dwp, const ControlHandles& c,
-                             int px, int pw, int base, int scrollUsed);
+                             int px, int pw, int base, int scrollUsed,
+                             const AppState& state);
     int  LayoutGroupsPanel (HDWP& dwp, const ControlHandles& c,
                              int px, int pw, int base, int scrollUsed);
-    void UpdateControlVisibility(const ControlHandles& c, ChartMode mode);
+    void UpdateControlVisibility(const ControlHandles& c, const AppState& state);
     void UpdateScrollBar(HWND sidebar, int contentH, int viewH);
     void ClampScroll(HWND sidebar);
 
@@ -88,6 +97,14 @@ private:
     // paint over the fixed header or footer.  DeferFixed skips the clamp.
     void Defer     (HDWP& dwp, HWND child, int x, int y, int w, int h);
     void DeferFixed(HDWP& dwp, HWND child, int x, int y, int w, int h);
+    // DeferScrollList — for tall scrollable child lists (the roster + rule
+    // ListViews) that grow to fit all their rows.  Unlike Defer(), it never
+    // shrinks the window: a ListView sized smaller than its content renders from
+    // row 0, cutting the BOTTOM rows, and spawns its own scrollbars.  Instead it
+    // keeps the list at full height/true Y (so all rows fit → no internal
+    // scrollbar) and clips it to the visible scroll band with SetWindowRgn, so
+    // scrolling reveals the correct slice (top rows scroll up out of view).
+    void DeferScrollList(HDWP& dwp, HWND child, int x, int y, int w, int h);
     void PlaceButtons(HDWP& dwp, std::initializer_list<HWND> hs,
                       int px, int pw, int& y, int minW);
 };
